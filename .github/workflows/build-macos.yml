@@ -1,0 +1,43 @@
+name: Build macOS
+
+on:
+  push:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache JUCE
+        uses: actions/cache@v4
+        with:
+          path: build/_deps/juce-src
+          key: juce-8.0.12
+
+      - name: Configure
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Package
+        run: |
+          mkdir -p artifact
+          cp -r "build/Rattler_artefacts/Release/VST3/Rattler.vst3" artifact/
+          cp -r "build/Rattler_artefacts/Release/AU/Rattler.component" artifact/
+          cd artifact
+          zip -r ../Rattler-macOS.zip .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Rattler-macOS
+          path: Rattler-macOS.zip
+          retention-days: 30
