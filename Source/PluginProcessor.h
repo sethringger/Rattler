@@ -87,8 +87,17 @@ private:
         double                   rawIRSampleRate = 44100.0;
         juce::String             sampleFilePath;
 
+        double sampleRate = 44100.0;
+
+        static constexpr int kContactKernelMaxLen = 8192;
+        float contactKernel[kContactKernelMaxLen] = {};
+        int   contactKernelLen = 0;
+        float contactRingBuf[kContactKernelMaxLen] = {};
+        int   contactRingPos = 0;
+
         void prepare (double sr, int maxBlock)
         {
+            sampleRate = sr;
             trigFilter .prepare (sr, maxBlock);
             noiseModel .prepare (sr, maxBlock);
             bounceModel.prepare (sr, maxBlock);
@@ -101,11 +110,16 @@ private:
             convScratch.setSize (2, maxBlock);
             prevConvOut.setSize (2, maxBlock);
             prevConvOut.clear();
+
+            contactKernelLen = 0;
+            contactRingPos   = 0;
+            juce::zeromem (contactRingBuf, sizeof (contactRingBuf));
         }
 
         void applyIRProcessing (float pitchSt, float decayMs,
                                 float startMs = 0.0f, float gainDb = 0.0f,
-                                float attackMs = 0.0f, float sustainMs = 0.0f)
+                                float attackMs = 0.0f, float sustainMs = 0.0f,
+                                float splitMs = 20.0f)
         {
             if (rawIR.getNumSamples() == 0) return;
 
@@ -124,7 +138,6 @@ private:
 
             for (int i = 0; i < newLen; ++i)
             {
-                // Source-domain position and time (pre-pitch, envelope is stable regardless of ratio)
                 const float srcIdx = (float)startSamp + (float)i * ratio;
                 const int   s0     = (int)srcIdx;
                 const int   s1     = s0 + 1;
@@ -145,9 +158,7 @@ private:
                 processed.setSample (0, i, sample * env);
             }
 
-            // Normalise by L2 norm (energy) so convolution output amplitude ≤ input
-            // amplitude, keeping the feedback loop stable at 0 dB regardless of IR
-            // length or content. gainLin then scales above or below that reference.
+            // L2 normalise — keeps feedback loop stable regardless of IR length/content.
             float l2 = 0.0f;
             for (int i = 0; i < newLen; ++i)
                 l2 += processed.getSample (0, i) * processed.getSample (0, i);
@@ -157,12 +168,69 @@ private:
             for (int i = 0; i < newLen; ++i)
                 processed.setSample (0, i, processed.getSample (0, i) * scale);
 
-            convEngine.loadImpulseResponse (std::move (processed),
-                rawIRSampleRate,
-                juce::dsp::Convolution::Stereo::no,
-                juce::dsp::Convolution::Trim::yes,
-                juce::dsp::Convolution::Normalise::no);
-            convHasIR = true;
+            // ── Split: contact kernel (zero-latency FIR) vs reverb tail (FFT) ──
+            // splitSampIR is measured in IR samples at rawIRSampleRate.
+            // The contact kernel is then resampled to the plugin's sampleRate for
+            // direct per-sample ring-buffer convolution.
+            const int splitSampIR = juce::jmin (
+                (int)(splitMs / 1000.0f * (float)rawIRSampleRate), newLen);
+            const int fadeSampsIR = juce::jmin (64, splitSampIR);
+
+            // Build contact kernel, resampled from IR rate to plugin rate.
+            const float srRatio = (float)sampleRate / (float)rawIRSampleRate;
+            const int kernLen   = juce::jmin ((int)((float)splitSampIR * srRatio + 0.5f),
+                                              kContactKernelMaxLen);
+            juce::zeromem (contactKernel, sizeof (contactKernel));
+            contactKernelLen = 0;
+            if (kernLen > 0 && splitSampIR > 0)
+            {
+                const int fadeStartKern = (int)((float)(splitSampIR - fadeSampsIR) * srRatio);
+                for (int i = 0; i < kernLen; ++i)
+                {
+                    const float srcPos = (float)i / srRatio;
+                    const int   ks0    = (int)srcPos;
+                    const int   ks1    = juce::jmin (ks0 + 1, splitSampIR - 1);
+                    const float kfrac  = srcPos - (float)ks0;
+                    float v = processed.getSample (0, ks0) * (1.0f - kfrac)
+                            + processed.getSample (0, ks1) * kfrac;
+                    if (fadeSampsIR > 0 && i >= fadeStartKern)
+                    {
+                        const int   fadeLen = juce::jmax (1, kernLen - fadeStartKern);
+                        const float t       = (float)(i - fadeStartKern) / (float)fadeLen;
+                        v *= 0.5f * (1.0f + std::cos (juce::MathConstants<float>::pi * t));
+                    }
+                    contactKernel[i] = v;
+                }
+                contactKernelLen = kernLen;
+            }
+
+            // Build reverb tail with complementary cosine fade-in at the split point.
+            const int tailStartIR = juce::jmax (0, splitSampIR - fadeSampsIR);
+            const int tailLen     = newLen - tailStartIR;
+            if (tailLen > 0)
+            {
+                juce::AudioBuffer<float> tail (1, tailLen);
+                for (int i = 0; i < tailLen; ++i)
+                {
+                    float v = processed.getSample (0, tailStartIR + i);
+                    if (fadeSampsIR > 0 && i < fadeSampsIR)
+                    {
+                        const float t = (float)i / (float)fadeSampsIR;
+                        v *= 0.5f * (1.0f - std::cos (juce::MathConstants<float>::pi * t));
+                    }
+                    tail.setSample (0, i, v);
+                }
+                convEngine.loadImpulseResponse (std::move (tail),
+                    rawIRSampleRate,
+                    juce::dsp::Convolution::Stereo::no,
+                    juce::dsp::Convolution::Trim::yes,
+                    juce::dsp::Convolution::Normalise::no);
+                convHasIR = true;
+            }
+            else
+            {
+                convHasIR = false;
+            }
         }
     };
 
@@ -192,7 +260,7 @@ private:
         bool  rattleModalSat, sourceFilterEn, trigFilterEn;
 
         bool  convEn;
-        float convWet, convDryWet, convGain, convStart, convAttack, convSustain;
+        float convWet, convDryWet, convGain, convStart, convAttack, convSustain, convSplit;
 
         float resGain, resWet, resSat;
         bool  resClip;

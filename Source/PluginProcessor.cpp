@@ -212,6 +212,10 @@ RattlerAudioProcessor::createParameterLayout()
             px + "ConvSustain", px + " Conv Sustain",
             Range (0.0f, 2000.0f, 1.0f, 0.4f), 0.0f,
             juce::AudioParameterFloatAttributes().withLabel ("ms")));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            px + "ConvSplit", px + " Conv Split",
+            Range (0.0f, 50.0f, 0.1f, 0.4f), 20.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("ms")));
 
         // Resonator (Noise / Bounce / Sample modes)
         layout.add (std::make_unique<juce::AudioParameterFloat> (
@@ -278,6 +282,7 @@ void RattlerAudioProcessor::prepareToPlay (double sr, int samplesPerBlock)
     sampleRate = sr;
     for (auto& layer : layers)
         layer.prepare (sr, samplesPerBlock);
+    setLatencySamples ((int) layers[0].convEngine.getLatency());
 }
 
 void RattlerAudioProcessor::releaseResources() {}
@@ -327,7 +332,8 @@ void RattlerAudioProcessor::loadConvIR (int layerIdx, const juce::File& f)
     const float start   = apvts.getRawParameterValue (px + "ConvStart")->load();
     const float attack  = apvts.getRawParameterValue (px + "ConvAttack")->load();
     const float sustain = apvts.getRawParameterValue (px + "ConvSustain")->load();
-    layer.applyIRProcessing (pitch, decay, start, gain, attack, sustain);
+    const float split   = apvts.getRawParameterValue (px + "ConvSplit")->load();
+    layer.applyIRProcessing (pitch, decay, start, gain, attack, sustain, split);
     if (onConvIRLoaded) onConvIRLoaded (layerIdx);
 }
 
@@ -352,6 +358,7 @@ void RattlerAudioProcessor::reprocessConvIR (int layerIdx)
     const float start   = apvts.getRawParameterValue (px + "ConvStart")->load();
     const float attack  = apvts.getRawParameterValue (px + "ConvAttack")->load();
     const float sustain = apvts.getRawParameterValue (px + "ConvSustain")->load();
+    const float split   = apvts.getRawParameterValue (px + "ConvSplit")->load();
 
     RLOG ("reprocessConvIR[" + juce::String (layerIdx) + "]"
           + " pitch="   + juce::String (pitch,   2)
@@ -360,10 +367,11 @@ void RattlerAudioProcessor::reprocessConvIR (int layerIdx)
           + " start="   + juce::String (start,   1)
           + " attack="  + juce::String (attack,  1)
           + " sustain=" + juce::String (sustain, 1)
+          + " split="   + juce::String (split,   1)
           + " rawIR="   + juce::String (layer.rawIR.getNumSamples())
           + " rtMode="  + juce::String ((int) convUseRTPitch[layerIdx].load()));
 
-    layer.applyIRProcessing (pitch, decay, start, gain, attack, sustain);
+    layer.applyIRProcessing (pitch, decay, start, gain, attack, sustain, split);
 }
 
 juce::String RattlerAudioProcessor::getConvIRFilePath (int layerIdx) const
@@ -462,6 +470,7 @@ RattlerAudioProcessor::readLayerParams (const juce::String& px) const
     p.convStart   = apvts.getRawParameterValue (px + "ConvStart")->load();
     p.convAttack  = apvts.getRawParameterValue (px + "ConvAttack")->load();
     p.convSustain = apvts.getRawParameterValue (px + "ConvSustain")->load();
+    p.convSplit   = apvts.getRawParameterValue (px + "ConvSplit")->load();
 
     p.resGain  = apvts.getRawParameterValue (px + "ResGain")->load();
     p.resClip  = apvts.getRawParameterValue (px + "ResClip")->load() > 0.5f;
@@ -522,7 +531,8 @@ void RattlerAudioProcessor::updateLayerModels (int idx, const LayerParams& p)
             L.rattleModel.setFilter        (p.rattleFiltFreq, p.rattleFiltBw);
             L.rattleModel.modalFeedbackSat = p.rattleModalSat;
             L.rattleModel.filterEnabled    = p.sourceFilterEn;
-            L.rattleModel.convWet = (p.convEn && L.convHasIR) ? p.convWet * p.convWet : 0.0f;
+            L.rattleModel.convWet = (p.convEn && (L.contactKernelLen > 0 || L.convHasIR))
+                                        ? p.convWet * p.convWet : 0.0f;
             break;
     }
 }
@@ -558,12 +568,23 @@ void RattlerAudioProcessor::processLayerSample (int idx, int i, float driveSigna
             break;
         case LayerMode::ModalRattle:
         {
+            // Contact feedback: zero-latency ring-buffer convolution with the contact
+            // kernel (first splitMs of the IR, resampled to plugin rate). Falls back to
+            // the one-block-delayed FFT output when no contact kernel is present (splitMs=0).
             float convFBRaw = 0.0f;
-            if (convActive)
+            const bool hasContactKernel = (p.convEn && L.contactKernelLen > 0);
+            if (hasContactKernel)
+            {
+                const int mask = Layer::kContactKernelMaxLen - 1;
+                for (int k = 0; k < L.contactKernelLen; ++k)
+                    convFBRaw += L.contactKernel[k]
+                               * L.contactRingBuf[(L.contactRingPos - k - 1
+                                                   + Layer::kContactKernelMaxLen) & mask];
+            }
+            else if (convActive)
             {
                 if (convUseRTPitch[idx].load())
                 {
-                    // Real-time pitch shift: fractional read of the previous convolution block.
                     const float pratio = convPitchRTRatio[idx].load();
                     const float rPos   = (float)i * pratio;
                     const int   r0     = juce::jlimit (0, L.prevConvOut.getNumSamples() - 1, (int)rPos);
@@ -577,11 +598,19 @@ void RattlerAudioProcessor::processLayerSample (int idx, int i, float driveSigna
                     convFBRaw = L.prevConvOut.getSample (0, i);
                 }
             }
-            // Soft-limit the feedback signal: linear below ±0.25, saturates above.
-            // Prevents the loop from running away regardless of IR content.
             const float convFB = std::tanh (convFBRaw * 4.0f) * 0.25f;
             L.rattleModel.processSample (filt, driveSignal, convFB, rawL, rawR);
             rawL *= 2.0f; rawR *= 2.0f;
+
+            // Update ring buffer with current mono rattle output.
+            if (hasContactKernel)
+            {
+                const int mask = Layer::kContactKernelMaxLen - 1;
+                L.contactRingBuf[L.contactRingPos] = (rawL + rawR) * 0.5f;
+                L.contactRingPos = (L.contactRingPos + 1) & mask;
+            }
+
+            // FFT reverb tail: write to scratch buffer, mix from previous block.
             if (convActive)
             {
                 L.convScratch.setSample (0, i, rawL);
@@ -643,12 +672,19 @@ void RattlerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     const int numChannels = buffer.getNumChannels();
     const int numSamples  = buffer.getNumSamples();
 
+    // convActive gates the FFT reverb tail path. When a contact kernel is present,
+    // feedback is handled by the zero-latency ring buffer, so convWet no longer
+    // activates the FFT path — only convDryWet does.
     const bool convActiveA = pA.convEn && layers[0].convHasIR
                            && (pA.convDryWet > 0.0f
-                               || (pA.mode == LayerMode::ModalRattle && pA.convWet > 0.0f));
+                               || (pA.mode == LayerMode::ModalRattle
+                                   && pA.convWet > 0.0f
+                                   && layers[0].contactKernelLen == 0));
     const bool convActiveB = pB.convEn && layers[1].convHasIR
                            && (pB.convDryWet > 0.0f
-                               || (pB.mode == LayerMode::ModalRattle && pB.convWet > 0.0f));
+                               || (pB.mode == LayerMode::ModalRattle
+                                   && pB.convWet > 0.0f
+                                   && layers[1].contactKernelLen == 0));
 
     if (convActiveA) layers[0].convScratch.clear();
     if (convActiveB) layers[1].convScratch.clear();

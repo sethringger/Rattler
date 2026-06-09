@@ -437,6 +437,10 @@ void RattlerAudioProcessorEditor::setupLayerUI (int idx,
     ui.convSustainAttach = std::make_unique<LayerUI::SliderAtt> (apvts, p + "ConvSustain", ui.convSustainSlider);
     ui.convStartAttach   = std::make_unique<LayerUI::SliderAtt> (apvts, p + "ConvStart",   ui.convStartSlider);
 
+    setupKnob (ui.convSplitSlider, "Split", ui.convSplitLabel);
+    ui.convSplitAttach = std::make_unique<LayerUI::SliderAtt> (apvts, p + "ConvSplit", ui.convSplitSlider);
+    addChildComponent (ui.convSplitSlider); addChildComponent (ui.convSplitLabel);
+
     // ParameterAttachment fires its callback AFTER the value is written to APVTS,
     // making it reliable for triggering reprocessing regardless of call order.
     {
@@ -465,6 +469,7 @@ void RattlerAudioProcessorEditor::setupLayerUI (int idx,
         ui.convStartReprocessAtt   = makeAtt (p + "ConvStart");
         ui.convAttackReprocessAtt  = makeAtt (p + "ConvAttack");
         ui.convSustainReprocessAtt = makeAtt (p + "ConvSustain");
+        ui.convSplitReprocessAtt   = makeAtt (p + "ConvSplit");
 
         // Gain: IRPreview never controls this, so never suppress it.
         ui.convGainReprocessAtt = std::make_unique<juce::ParameterAttachment> (
@@ -765,6 +770,7 @@ void RattlerAudioProcessorEditor::setLayerVisible (int idx, bool v)
     ui.convEnableToggle.setVisible (v);
     ui.convWetSlider   .setVisible (v); ui.convWetLabel   .setVisible (v);
     ui.convDryWetSlider.setVisible (v); ui.convDryWetLabel.setVisible (v);
+    ui.convSplitSlider .setVisible (v); ui.convSplitLabel .setVisible (v);
     ui.convPitchSlider .setVisible (v); ui.convPitchLabel .setVisible (v);
     ui.convGainSlider  .setVisible (v); ui.convGainLabel  .setVisible (v);
     ui.convPitch60Btn  .setVisible (v);
@@ -838,6 +844,7 @@ void RattlerAudioProcessorEditor::applyConvEnabled (int idx, bool on)
     auto& ui = layerUIs[idx];
     ui.convWetSlider   .setEnabled (on); ui.convWetLabel   .setEnabled (on);
     ui.convDryWetSlider.setEnabled (on); ui.convDryWetLabel.setEnabled (on);
+    ui.convSplitSlider .setEnabled (on); ui.convSplitLabel .setEnabled (on);
     ui.convPitchSlider .setEnabled (on); ui.convPitchLabel .setEnabled (on);
     ui.convGainSlider  .setEnabled (on); ui.convGainLabel  .setEnabled (on);
     if (ui.irPreview) { ui.irPreview->setEnabled (on); ui.irPreview->repaint(); }
@@ -1077,21 +1084,24 @@ void RattlerAudioProcessorEditor::layoutLayer (int idx)
 
         if (hasConvFB)
         {
-            const int slot4  = knobAreaW / 4;
-            const int kw4    = slot4 - 3;
-            layoutKnob (ui.convWetSlider,    ui.convWetLabel,    { knobX + slot4 * 0, knobbodyY, kw4, knobbodyH });
-            layoutKnob (ui.convDryWetSlider, ui.convDryWetLabel, { knobX + slot4 * 1, knobbodyY, kw4, knobbodyH });
-            layoutKnob (ui.convPitchSlider,  ui.convPitchLabel,  { knobX + slot4 * 2, knobbodyY, kw4, knobbodyH });
-            layoutKnob (ui.convGainSlider,   ui.convGainLabel,   { knobX + slot4 * 3, knobbodyY, kw4, knobbodyH });
+            // 5 knobs: Feedback | Dry/Wet | Split | Pitch | Gain
+            const int slot5  = knobAreaW / 5;
+            const int kw5    = slot5 - 3;
+            layoutKnob (ui.convWetSlider,    ui.convWetLabel,    { knobX + slot5 * 0, knobbodyY, kw5, knobbodyH });
+            layoutKnob (ui.convDryWetSlider, ui.convDryWetLabel, { knobX + slot5 * 1, knobbodyY, kw5, knobbodyH });
+            layoutKnob (ui.convSplitSlider,  ui.convSplitLabel,  { knobX + slot5 * 2, knobbodyY, kw5, knobbodyH });
+            layoutKnob (ui.convPitchSlider,  ui.convPitchLabel,  { knobX + slot5 * 3, knobbodyY, kw5, knobbodyH });
+            layoutKnob (ui.convGainSlider,   ui.convGainLabel,   { knobX + slot5 * 4, knobbodyY, kw5, knobbodyH });
 
             const int modeY  = knobbodyY + knobbodyH + 2;
-            const int btnW   = kw4 / 3;
-            const int pitchX = knobX + slot4 * 2;
+            const int btnW   = kw5 / 3;
+            const int pitchX = knobX + slot5 * 3;
             ui.convPitch60Btn.setBounds (pitchX,           modeY, btnW,          modeStripH);
             ui.convPitch10Btn.setBounds (pitchX + btnW,    modeY, btnW,          modeStripH);
-            ui.convPitchRTBtn.setBounds (pitchX + btnW*2,  modeY, kw4 - btnW*2, modeStripH);
+            ui.convPitchRTBtn.setBounds (pitchX + btnW*2,  modeY, kw5 - btnW*2, modeStripH);
 
             ui.convWetSlider   .setVisible (true); ui.convWetLabel   .setVisible (true);
+            ui.convSplitSlider .setVisible (true); ui.convSplitLabel .setVisible (true);
         }
         else
         {

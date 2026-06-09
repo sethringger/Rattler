@@ -201,6 +201,8 @@ private:
         juce::Label        convSustainLabel;
         juce::Slider       convStartSlider;
         juce::Label        convStartLabel;
+        juce::Slider       convSplitSlider;
+        juce::Label        convSplitLabel;
         juce::TextButton   loadConvIRBtn;
         std::unique_ptr<IRPreviewComponent> irPreview;
         std::unique_ptr<juce::FileChooser> convFileChooser;
@@ -238,6 +240,7 @@ private:
         std::unique_ptr<SliderAtt> convAttackAttach;
         std::unique_ptr<SliderAtt> convSustainAttach;
         std::unique_ptr<SliderAtt> convStartAttach;
+        std::unique_ptr<SliderAtt> convSplitAttach;
 
         // ParameterAttachment fires AFTER the value lands in APVTS — used instead
         // of onValueChange to reliably trigger IR reprocessing for all conv params.
@@ -248,6 +251,7 @@ private:
         std::unique_ptr<ParamAtt> convStartReprocessAtt;
         std::unique_ptr<ParamAtt> convAttackReprocessAtt;
         std::unique_ptr<ParamAtt> convSustainReprocessAtt;
+        std::unique_ptr<ParamAtt> convSplitReprocessAtt;
 
         std::unique_ptr<ParamAtt> sampleStartPreviewAtt, sampleAttackPreviewAtt;
         std::unique_ptr<ParamAtt> sampleSustainPreviewAtt, sampleDecayPreviewAtt;
