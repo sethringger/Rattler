@@ -87,6 +87,52 @@ RattlerAudioProcessorEditor::RattlerAudioProcessorEditor (RattlerAudioProcessor&
         routingAttach->endGesture();
     };
 
+    // Advanced toggle — pure UI state, not saved to APVTS
+    advancedToggle.setButtonText ("Advanced");
+    advancedToggle.setLookAndFeel (&pillToggleLnf);
+    advancedToggle.onClick = [this]
+    {
+        showAdvanced = advancedToggle.getToggleState();
+        resized();
+        repaint();
+    };
+    addAndMakeVisible (advancedToggle);
+
+    // Gear tab button
+    auto setupGearBtn = [&] (juce::TextButton& btn)
+    {
+        btn.setButtonText (juce::String::fromUTF8 ("\xe2\x9a\x99"));
+        btn.setClickingTogglesState (false);
+        btn.setColour (juce::TextButton::buttonColourId,   juce::Colour (0xff1a1a1a));
+        btn.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff2a2a2a));
+        btn.setColour (juce::TextButton::textColourOffId,  kSubtext);
+        btn.setColour (juce::TextButton::textColourOnId,   kAccent);
+        addAndMakeVisible (btn);
+    };
+    setupGearBtn (gearTabBtn);
+    gearTabBtn.onClick = [this] { switchToTab (4); };
+
+    // Perf toggles — hidden by default, shown in gear tab
+    modalClampToggle.setButtonText ("Clamp Guard");
+    modalClampToggle.setLookAndFeel (&pillToggleLnf);
+    addChildComponent (modalClampToggle);
+    modalClampAttach = std::make_unique<ButtonAtt> (apvts, "modalClamp", modalClampToggle);
+
+    fastTanhToggle.setButtonText ("Fast Tanh");
+    fastTanhToggle.setLookAndFeel (&pillToggleLnf);
+    addChildComponent (fastTanhToggle);
+    fastTanhAttach = std::make_unique<ButtonAtt> (apvts, "fastTanh", fastTanhToggle);
+
+    idleGateToggle.setButtonText ("Idle Gate");
+    idleGateToggle.setLookAndFeel (&pillToggleLnf);
+    addChildComponent (idleGateToggle);
+    idleGateAttach = std::make_unique<ButtonAtt> (apvts, "idleGate", idleGateToggle);
+
+    convSkipToggle.setButtonText ("Conv Skip");
+    convSkipToggle.setLookAndFeel (&pillToggleLnf);
+    addChildComponent (convSkipToggle);
+    convSkipAttach = std::make_unique<ButtonAtt> (apvts, "convSkip", convSkipToggle);
+
     // ── Tab buttons ──────────────────────────────────────────────────────────
     auto setupTabBtn = [&] (juce::TextButton& btn, const juce::String& text)
     {
@@ -280,9 +326,17 @@ void RattlerAudioProcessorEditor::setupLayerUI (int idx,
     ui.rattleJitterAttach = std::make_unique<LayerUI::SliderAtt> (apvts, p + "RattleJitter", ui.rattleJitterSlider);
     ui.rattleFilterXY = std::make_unique<FilterXYPad> (
         *apvts.getParameter (p + "RattleFilterFreq"), *apvts.getParameter (p + "RattleFilterBw"));
+    ui.rattleDCAttach    = std::make_unique<LayerUI::ButtonAtt> (apvts, p + "RattleDCEnable", ui.rattleDCToggle);
+    ui.rattleDCPreAttach = std::make_unique<LayerUI::ButtonAtt> (apvts, p + "RattleDCPre",    ui.rattleDCPreToggle);
+    ui.rattleDCToggle   .setButtonText ("DC Block");
+    ui.rattleDCPreToggle.setButtonText ("Pre-Sat");
+    ui.rattleDCToggle   .setLookAndFeel (&pillToggleLnf);
+    ui.rattleDCPreToggle.setLookAndFeel (&pillToggleLnf);
     addChildComponent (ui.rattleGapSlider);    addChildComponent (ui.rattleGapLabel);
     addChildComponent (ui.rattleKSlider);      addChildComponent (ui.rattleKLabel);
     addChildComponent (ui.rattleJitterSlider); addChildComponent (ui.rattleJitterLabel);
+    addChildComponent (ui.rattleDCToggle);
+    addChildComponent (ui.rattleDCPreToggle);
     addChildComponent (*ui.rattleFilterXY);
 
     // Trigger tab
@@ -437,7 +491,8 @@ void RattlerAudioProcessorEditor::setupLayerUI (int idx,
     ui.convSustainAttach = std::make_unique<LayerUI::SliderAtt> (apvts, p + "ConvSustain", ui.convSustainSlider);
     ui.convStartAttach   = std::make_unique<LayerUI::SliderAtt> (apvts, p + "ConvStart",   ui.convStartSlider);
 
-    setupKnob (ui.convSplitSlider, "Split", ui.convSplitLabel);
+    setupKnob (ui.convSplitSlider, "Kernel", ui.convSplitLabel);
+    ui.convSplitSlider.setTextValueSuffix (" ms");
     ui.convSplitAttach = std::make_unique<LayerUI::SliderAtt> (apvts, p + "ConvSplit", ui.convSplitSlider);
     addChildComponent (ui.convSplitSlider); addChildComponent (ui.convSplitLabel);
 
@@ -668,6 +723,7 @@ void RattlerAudioProcessorEditor::setupKnob (juce::Slider& s,
                                               const juce::String& labelText,
                                               juce::Label& l)
 {
+    s.setLookAndFeel (&knobLnf);
     s.setSliderStyle (juce::Slider::RotaryVerticalDrag);
     s.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 52, 13);
     s.setColour (juce::Slider::thumbColourId,            kAccent);
@@ -738,6 +794,8 @@ void RattlerAudioProcessorEditor::setLayerVisible (int idx, bool v)
     ui.rattleGapSlider   .setVisible (v); ui.rattleGapLabel   .setVisible (v);
     ui.rattleKSlider     .setVisible (v); ui.rattleKLabel     .setVisible (v);
     ui.rattleJitterSlider.setVisible (v); ui.rattleJitterLabel.setVisible (v);
+    ui.rattleDCToggle    .setVisible (v);
+    ui.rattleDCPreToggle .setVisible (v);
     ui.rattleFilterXY->setVisible (v);
 
     // Trigger
@@ -805,6 +863,8 @@ void RattlerAudioProcessorEditor::setLayerEnabled (int idx, bool en)
     ui.rattleGapSlider       .setEnabled (en);
     ui.rattleKSlider         .setEnabled (en);
     ui.rattleJitterSlider    .setEnabled (en);
+    ui.rattleDCToggle        .setEnabled (en);
+    ui.rattleDCPreToggle     .setEnabled (en);
     ui.trigThreshSlider      .setEnabled (en);
     ui.trigFilterEnableToggle.setEnabled (en);
     ui.resGainSlider         .setEnabled (en);
@@ -957,14 +1017,26 @@ void RattlerAudioProcessorEditor::layoutLayer (int idx)
         }
         case Mode::ModalRattle:
         {
-            const int halfH = bodyH / 2;
-            const int slot3 = knobAreaW / 3;
-            const int kw3   = slot3 - 3;
-            layoutKnob (ui.levelSlider,        ui.levelLabel,        { knobX,              bodyY,         kw2, halfH });
-            layoutKnob (ui.satSlider,          ui.satLabel,          { knobX + slot2,      bodyY,         kw2, halfH });
-            layoutKnob (ui.rattleGapSlider,    ui.rattleGapLabel,    { knobX + slot3 * 0,  bodyY + halfH, kw3, halfH });
-            layoutKnob (ui.rattleKSlider,      ui.rattleKLabel,      { knobX + slot3 * 1,  bodyY + halfH, kw3, halfH });
-            layoutKnob (ui.rattleJitterSlider, ui.rattleJitterLabel, { knobX + slot3 * 2,  bodyY + halfH, kw3, halfH });
+            const int stripH    = showAdvanced ? 18 : 0;
+            const int stripGap  = showAdvanced ? 2  : 0;
+            const int knobbodyY = bodyY + stripH + stripGap;
+            const int knobbodyH = bodyH - stripH - stripGap;
+            const int halfH     = knobbodyH / 2;
+            const int slot3     = knobAreaW / 3;
+            const int kw3       = slot3 - 3;
+            if (showAdvanced)
+            {
+                const int dcPreX = knobX + kw2 + 4;
+                ui.rattleDCToggle   .setBounds (knobX,  bodyY, kw2,                    stripH);
+                ui.rattleDCPreToggle.setBounds (dcPreX, bodyY, knobAreaW - kw2 - 4,    stripH);
+                ui.rattleDCToggle   .setVisible (true);
+                ui.rattleDCPreToggle.setVisible (true);
+            }
+            layoutKnob (ui.levelSlider,        ui.levelLabel,        { knobX,              knobbodyY,         kw2, halfH });
+            layoutKnob (ui.satSlider,          ui.satLabel,          { knobX + slot2,      knobbodyY,         kw2, halfH });
+            layoutKnob (ui.rattleGapSlider,    ui.rattleGapLabel,    { knobX + slot3 * 0,  knobbodyY + halfH, kw3, halfH });
+            layoutKnob (ui.rattleKSlider,      ui.rattleKLabel,      { knobX + slot3 * 1,  knobbodyY + halfH, kw3, halfH });
+            layoutKnob (ui.rattleJitterSlider, ui.rattleJitterLabel, { knobX + slot3 * 2,  knobbodyY + halfH, kw3, halfH });
             ui.rattleGapSlider   .setVisible (true); ui.rattleGapLabel   .setVisible (true);
             ui.rattleKSlider     .setVisible (true); ui.rattleKLabel     .setVisible (true);
             ui.rattleJitterSlider.setVisible (true); ui.rattleJitterLabel.setVisible (true);
@@ -1075,30 +1147,37 @@ void RattlerAudioProcessorEditor::layoutLayer (int idx)
         const bool hasConvFB = (mode == Mode::ModalRattle);
 
         const int stripH     = 18;
-        const int modeStripH = 14;
+        const int modeStripH = showAdvanced ? 14 : 0;
+        const int modeGap    = showAdvanced ? 2  : 0;
         const int knobbodyY  = bodyY + stripH + 3;
-        const int knobbodyH  = bodyH - stripH - 3 - modeStripH - 2;
+        const int knobbodyH  = bodyH - stripH - 3 - modeStripH - modeGap;
 
         ui.convEnableToggle.setBounds (knobX, bodyY, knobAreaW, stripH);
         ui.convEnableToggle.setVisible (true);
 
         if (hasConvFB)
         {
-            // 5 knobs: Feedback | Dry/Wet | Split | Pitch | Gain
-            const int slot5  = knobAreaW / 5;
-            const int kw5    = slot5 - 3;
-            layoutKnob (ui.convWetSlider,    ui.convWetLabel,    { knobX + slot5 * 0, knobbodyY, kw5, knobbodyH });
-            layoutKnob (ui.convDryWetSlider, ui.convDryWetLabel, { knobX + slot5 * 1, knobbodyY, kw5, knobbodyH });
-            layoutKnob (ui.convSplitSlider,  ui.convSplitLabel,  { knobX + slot5 * 2, knobbodyY, kw5, knobbodyH });
-            layoutKnob (ui.convPitchSlider,  ui.convPitchLabel,  { knobX + slot5 * 3, knobbodyY, kw5, knobbodyH });
-            layoutKnob (ui.convGainSlider,   ui.convGainLabel,   { knobX + slot5 * 4, knobbodyY, kw5, knobbodyH });
+            // 2 rows: row1 = Feedback | Dry/Wet | Kernel; row2 = Pitch | Gain
+            const int halfH  = knobbodyH / 2;
+            const int slot3  = knobAreaW / 3;
+            const int kw3    = slot3 - 3;
+            layoutKnob (ui.convWetSlider,    ui.convWetLabel,    { knobX + slot3 * 0, knobbodyY,         kw3, halfH });
+            layoutKnob (ui.convDryWetSlider, ui.convDryWetLabel, { knobX + slot3 * 1, knobbodyY,         kw3, halfH });
+            layoutKnob (ui.convSplitSlider,  ui.convSplitLabel,  { knobX + slot3 * 2, knobbodyY,         kw3, halfH });
 
-            const int modeY  = knobbodyY + knobbodyH + 2;
-            const int btnW   = kw5 / 3;
-            const int pitchX = knobX + slot5 * 3;
+            const int slot2  = knobAreaW / 2;
+            const int kw2    = slot2 - 3;
+            const int row2H  = knobbodyH - halfH;
+            const int knobH2 = row2H - modeStripH - 2;
+            layoutKnob (ui.convPitchSlider,  ui.convPitchLabel,  { knobX + slot2 * 0, knobbodyY + halfH, kw2, knobH2 });
+            layoutKnob (ui.convGainSlider,   ui.convGainLabel,   { knobX + slot2 * 1, knobbodyY + halfH, kw2, knobH2 });
+
+            const int modeY  = knobbodyY + halfH + knobH2 + 2;
+            const int btnW   = kw2 / 3;
+            const int pitchX = knobX + slot2 * 0;
             ui.convPitch60Btn.setBounds (pitchX,           modeY, btnW,          modeStripH);
             ui.convPitch10Btn.setBounds (pitchX + btnW,    modeY, btnW,          modeStripH);
-            ui.convPitchRTBtn.setBounds (pitchX + btnW*2,  modeY, kw5 - btnW*2, modeStripH);
+            ui.convPitchRTBtn.setBounds (pitchX + btnW*2,  modeY, kw2 - btnW*2, modeStripH);
 
             ui.convWetSlider   .setVisible (true); ui.convWetLabel   .setVisible (true);
             ui.convSplitSlider .setVisible (true); ui.convSplitLabel .setVisible (true);
@@ -1122,9 +1201,9 @@ void RattlerAudioProcessorEditor::layoutLayer (int idx)
         ui.convDryWetSlider.setVisible (true); ui.convDryWetLabel.setVisible (true);
         ui.convPitchSlider .setVisible (true); ui.convPitchLabel .setVisible (true);
         ui.convGainSlider  .setVisible (true); ui.convGainLabel  .setVisible (true);
-        ui.convPitch60Btn  .setVisible (true);
-        ui.convPitch10Btn  .setVisible (true);
-        ui.convPitchRTBtn  .setVisible (true);
+        ui.convPitch60Btn  .setVisible (showAdvanced);
+        ui.convPitch10Btn  .setVisible (showAdvanced);
+        ui.convPitchRTBtn  .setVisible (showAdvanced);
 
         // Right panel: IR preview + load button
         const int btnH     = 22;
@@ -1146,6 +1225,7 @@ void RattlerAudioProcessorEditor::switchToTab (int tab)
     triggerTabBtn    .setToggleState (tab == 1, juce::dontSendNotification);
     resonatorTabBtn  .setToggleState (tab == 2, juce::dontSendNotification);
     convolutionTabBtn.setToggleState (tab == 3, juce::dontSendNotification);
+    gearTabBtn       .setToggleState (tab == 4, juce::dontSendNotification);
     resized();
     repaint();
 }
@@ -1167,19 +1247,33 @@ void RattlerAudioProcessorEditor::paint (juce::Graphics& g)
     g.setColour (juce::Colour (0xff1e1e1e));
     g.fillRect (0, kGlobalH, kW, kTabBarH);
 
-    const int tabW = kW / 4;
-    g.setColour (kAccent);
-    g.fillRect (currentTab * tabW, kGlobalH + kTabBarH - 2, tabW, 2);
+    // Accent underline on active tab
+    {
+        const int gearW    = 36;
+        const int mainTabW = (kW - gearW) / 4;
+        int ax, aw;
+        if (currentTab < 4) { ax = currentTab * mainTabW; aw = mainTabW; }
+        else                 { ax = kW - gearW;            aw = gearW;    }
+        g.setColour (kAccent);
+        g.fillRect (ax, kGlobalH + kTabBarH - 2, aw, 2);
+    }
 
     g.setColour (kGrid);
     g.drawHorizontalLine (kGlobalH + kTabBarH, 0.0f, (float)kW);
 
-    // Two-box layout per layer row:
-    //   Outer box = the layer container (full row, kPad from window edge)
-    //   Inside: [layer button — self-drawn] | [content box = params + XY pad]
-    //   kBoxInset is the consistent gap on every side (outer-to-button, outer-to-content, etc.)
+    // Gear tab: paint section header, skip layer boxes
+    if (currentTab == 4)
     {
-        constexpr int   knobX  = kPad + kLBtnW;   // content box left edge
+        g.setColour (kSubtext);
+        g.setFont (juce::Font (juce::FontOptions (10.0f)));
+        g.drawText ("PERFORMANCE", kPad + 40, kContentY + 10, 200, 16,
+                    juce::Justification::centredLeft);
+        return;
+    }
+
+    // Two-box layout per layer row
+    {
+        constexpr int   knobX  = kPad + kLBtnW;
         constexpr float outerR = 5.f;
         constexpr float innerR = 3.f;
         constexpr float bi     = (float)kBoxInset;
@@ -1188,7 +1282,6 @@ void RattlerAudioProcessorEditor::paint (juce::Graphics& g)
         {
             const float ry = (float)(kContentY + row * (kRowH + kRowGap));
 
-            // ── Outer layer container ──────────────────────────────────────────
             g.setColour (juce::Colour (row == 0 ? 0xff1c1c1c : 0xff1f1f1f));
             g.fillRoundedRectangle (kPad + 0.5f, ry + 0.5f,
                                     kW - kPad * 2 - 1.f, kRowH - 1.f, outerR);
@@ -1196,7 +1289,6 @@ void RattlerAudioProcessorEditor::paint (juce::Graphics& g)
             g.drawRoundedRectangle (kPad + 0.5f, ry + 0.5f,
                                     kW - kPad * 2 - 1.f, kRowH - 1.f, outerR, 1.f);
 
-            // ── Content box (params + XY pad) — inset kBoxInset on all sides ──
             const float cx = (float)knobX;
             const float cw = (float)(kW - knobX - kPad) - bi;
             g.setColour (juce::Colour (row == 0 ? 0xff171717 : 0xff1a1a1a));
@@ -1227,22 +1319,54 @@ void RattlerAudioProcessorEditor::resized()
         const int routeX = 108 + kw * 2 + 16;
         routingParallelBtn.setBounds (routeX,      togY, 85, 26);
         routingSeqBtn     .setBounds (routeX + 85, togY, 95, 26);
+        advancedToggle    .setBounds (routeX + 85 + 95 + 12, togY, 100, 26);
     }
 
-    // ── Tab buttons ──────────────────────────────────────────────────────────
+    // ── Tab buttons (4 main + 1 gear) ────────────────────────────────────────
     {
-        const int tabW = kW / 4;
-        sourceTabBtn     .setBounds (0,        kGlobalH, tabW,          kTabBarH);
-        triggerTabBtn    .setBounds (tabW,     kGlobalH, tabW,          kTabBarH);
-        resonatorTabBtn  .setBounds (tabW * 2, kGlobalH, tabW,          kTabBarH);
-        convolutionTabBtn.setBounds (tabW * 3, kGlobalH, kW - tabW * 3, kTabBarH);
+        const int gearW   = 36;
+        const int mainTabW = (kW - gearW) / 4;
+        sourceTabBtn     .setBounds (0,            kGlobalH, mainTabW,       kTabBarH);
+        triggerTabBtn    .setBounds (mainTabW,     kGlobalH, mainTabW,       kTabBarH);
+        resonatorTabBtn  .setBounds (mainTabW * 2, kGlobalH, mainTabW,       kTabBarH);
+        convolutionTabBtn.setBounds (mainTabW * 3, kGlobalH, mainTabW,       kTabBarH);
+        gearTabBtn       .setBounds (kW - gearW,   kGlobalH, gearW,          kTabBarH);
     }
 
-    // ── Layer enable buttons (inset kBoxInset inside the outer container) ────
+    // ── Layer enable buttons ─────────────────────────────────────────────────
     for (int i = 0; i < 2; ++i)
+    {
         layerBtns[i].setBounds (kPad + kBoxInset,
                                 kContentY + i * (kRowH + kRowGap) + kBoxInset,
                                 18, kRowH - kBoxInset * 2);
+        layerBtns[i].setVisible (currentTab != 4);
+    }
+
+    // ── Gear tab content ──────────────────────────────────────────────────────
+    if (currentTab == 4)
+    {
+        setLayerVisible (0, false);
+        setLayerVisible (1, false);
+
+        const int gx   = kPad + 40;
+        const int gy   = kContentY + 30;
+        const int gtW  = 130, gtH = 26, gtGap = 8;
+        modalClampToggle.setBounds (gx,              gy,          gtW, gtH);
+        fastTanhToggle  .setBounds (gx + gtW + gtGap, gy,          gtW, gtH);
+        idleGateToggle  .setBounds (gx,              gy + gtH + gtGap, gtW, gtH);
+        convSkipToggle  .setBounds (gx + gtW + gtGap, gy + gtH + gtGap, gtW, gtH);
+        modalClampToggle.setVisible (true);
+        fastTanhToggle  .setVisible (true);
+        idleGateToggle  .setVisible (true);
+        convSkipToggle  .setVisible (true);
+        return;
+    }
+
+    // Hide perf toggles when not in gear tab
+    modalClampToggle.setVisible (false);
+    fastTanhToggle  .setVisible (false);
+    idleGateToggle  .setVisible (false);
+    convSkipToggle  .setVisible (false);
 
     // ── Layer content ─────────────────────────────────────────────────────────
     for (int i = 0; i < 2; ++i)

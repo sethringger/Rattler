@@ -173,6 +173,10 @@ RattlerAudioProcessor::createParameterLayout()
         layout.add (std::make_unique<juce::AudioParameterBool> (
             px + "RattleModalSat", px + " Modal Feedback Sat", true));
         layout.add (std::make_unique<juce::AudioParameterBool> (
+            px + "RattleDCEnable", px + " DC Block Enable", false));
+        layout.add (std::make_unique<juce::AudioParameterBool> (
+            px + "RattleDCPre", px + " DC Block Pre-Sat", false));
+        layout.add (std::make_unique<juce::AudioParameterBool> (
             px + "SourceFilterEnable", px + " Source Filter Enable", true));
         layout.add (std::make_unique<juce::AudioParameterBool> (
             px + "TrigFilterEnable", px + " Trig Filter Enable", true));
@@ -260,6 +264,14 @@ RattlerAudioProcessor::createParameterLayout()
         "masterSat", "Master Sat", Range (0.0f, 1.0f, 0.001f), 0.0f));
     layout.add (std::make_unique<juce::AudioParameterBool> (
         "routing", "Sequential", false));
+    layout.add (std::make_unique<juce::AudioParameterBool> (
+        "modalClamp", "Modal Clamp", false));
+    layout.add (std::make_unique<juce::AudioParameterBool> (
+        "fastTanh", "Fast Tanh", false));
+    layout.add (std::make_unique<juce::AudioParameterBool> (
+        "idleGate", "Idle Gate", false));
+    layout.add (std::make_unique<juce::AudioParameterBool> (
+        "convSkip", "Conv Skip", false));
 
     return layout;
 }
@@ -460,6 +472,8 @@ RattlerAudioProcessor::readLayerParams (const juce::String& px) const
     p.rattleFiltFreq = apvts.getRawParameterValue (px + "RattleFilterFreq")->load();
     p.rattleFiltBw   = apvts.getRawParameterValue (px + "RattleFilterBw")->load();
     p.rattleModalSat = apvts.getRawParameterValue (px + "RattleModalSat")->load() > 0.5f;
+    p.rattleDCEn     = apvts.getRawParameterValue (px + "RattleDCEnable")->load() > 0.5f;
+    p.rattleDCPre    = apvts.getRawParameterValue (px + "RattleDCPre")->load() > 0.5f;
     p.sourceFilterEn = apvts.getRawParameterValue (px + "SourceFilterEnable")->load() > 0.5f;
     p.trigFilterEn   = apvts.getRawParameterValue (px + "TrigFilterEnable")->load() > 0.5f;
 
@@ -623,6 +637,16 @@ void RattlerAudioProcessor::processLayerSample (int idx, int i, float driveSigna
                     rawR = rawR * (1.0f - p.convDryWet) + convOutR * p.convDryWet;
                 }
             }
+
+            if (p.rattleDCEn && p.rattleDCPre)
+            {
+                float x0 = rawL;
+                rawL = rawL - L.dcxL + L.dcR * L.dcyL;
+                L.dcxL = x0; L.dcyL = rawL;
+                float x1 = rawR;
+                rawR = rawR - L.dcxR + L.dcR * L.dcyR;
+                L.dcxR = x1; L.dcyR = rawR;
+            }
             break;
         }
     }
@@ -632,6 +656,16 @@ void RattlerAudioProcessor::processLayerSample (int idx, int i, float driveSigna
                            ? L.sourceSat.process (rawR) : satL;
 
     outL = satL; outR = satR;
+
+    if (p.mode == LayerMode::ModalRattle && p.rattleDCEn && !p.rattleDCPre)
+    {
+        float x0 = outL;
+        outL = outL - L.dcxL + L.dcR * L.dcyL;
+        L.dcxL = x0; L.dcyL = outL;
+        float x1 = outR;
+        outR = outR - L.dcxR + L.dcR * L.dcyR;
+        L.dcxR = x1; L.dcyR = outR;
+    }
     if (p.mode != LayerMode::ModalRattle)
     {
         float resL, resR;
@@ -661,6 +695,16 @@ void RattlerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     const float masterMix   = apvts.getRawParameterValue ("masterMix")->load();
     const float masterSatDr = apvts.getRawParameterValue ("masterSat")->load();
     const bool  sequential  = apvts.getRawParameterValue ("routing")->load() > 0.5f;
+    const bool  modalClamp  = apvts.getRawParameterValue ("modalClamp")->load() > 0.5f;
+    const bool  fastTanh    = apvts.getRawParameterValue ("fastTanh")->load() > 0.5f;
+    const bool  idleGate    = apvts.getRawParameterValue ("idleGate")->load() > 0.5f;
+    const bool  convSkip    = apvts.getRawParameterValue ("convSkip")->load() > 0.5f;
+    layers[0].rattleModel.useClamp       = modalClamp;
+    layers[1].rattleModel.useClamp       = modalClamp;
+    layers[0].rattleModel.useFastTanh    = fastTanh;
+    layers[1].rattleModel.useFastTanh    = fastTanh;
+    layers[0].rattleModel.idleGateEnabled = idleGate;
+    layers[1].rattleModel.idleGateEnabled = idleGate;
 
     const LayerParams pA = readLayerParams ("layerA");
     const LayerParams pB = readLayerParams ("layerB");
@@ -718,6 +762,29 @@ void RattlerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     auto runConv = [&] (int layerIdx)
     {
         auto& layer = layers[layerIdx];
+
+        if (convSkip)
+        {
+            // Skip the FFT if both the new input and the previous output are silent.
+            // Checking prevConvOut avoids cutting off a still-ringing reverb tail.
+            float scratchEnergy = 0.0f, tailEnergy = 0.0f;
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                const float* s = layer.convScratch.getReadPointer (ch);
+                const float* t = layer.prevConvOut .getReadPointer (ch);
+                for (int n = 0; n < numSamples; ++n)
+                {
+                    scratchEnergy += s[n] * s[n];
+                    tailEnergy    += t[n] * t[n];
+                }
+            }
+            if (scratchEnergy < 1e-8f && tailEnergy < 1e-8f)
+            {
+                layer.prevConvOut.clear();
+                return;
+            }
+        }
+
         auto inBlock  = juce::dsp::AudioBlock<float> (layer.convScratch).getSubBlock (0, (size_t)numSamples);
         auto outBlock = juce::dsp::AudioBlock<float> (layer.prevConvOut).getSubBlock (0, (size_t)numSamples);
         layer.convEngine.process (juce::dsp::ProcessContextNonReplacing<float> (inBlock, outBlock));

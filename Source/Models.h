@@ -4,6 +4,7 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_dsp/juce_dsp.h>
 
+
 // =============================================================================
 // TriggerFilter
 // Resonant bandpass for per-source trigger detection and bounce drive.
@@ -506,6 +507,19 @@ struct ModalRattleModel
     // --- Convolution feedback (set externally once per block) ---
     float convWet = 0.0f;   // 0 = disabled (today's behavior); 1 = full IR feedback in x_r
 
+    // --- Performance options ---
+    bool useClamp    = false;  // replace per-mode isfinite() with jlimit clamp
+    bool useFastTanh = false;  // replace std::tanh in contact force with Padé approximant
+
+    // --- Idle gate ---
+    bool idleGateEnabled = false;
+    bool fullyIdle       = false;
+    int  idleCounter     = 0;
+
+    static constexpr int   kIdleThreshSamples = 4096;   // ~93ms hysteresis before sleeping
+    static constexpr float kIdleOutputThresh  = 1e-5f;  // ~-100 dB amplitude
+    static constexpr float kIdleDriveThresh   = 1e-4f;
+
     // --- Pitch jitter ---
     float a1_0[kMaxModes]   = {};  // base a1 before any jitter scatter
     float r_mode[kMaxModes] = {};  // pole radius per mode
@@ -556,6 +570,8 @@ struct ModalRattleModel
         substratePos  = 0.0f;
         inContact     = false;
         prevInContact = false;
+        fullyIdle     = false;
+        idleCounter   = 0;
         hpFilter.reset();  lpFilter.reset();
         hpFilterR.reset(); lpFilterR.reset();
         for (int m = 0; m < kMaxModes; ++m)
@@ -689,6 +705,22 @@ public:
     //         Blended into x_r so the IR body response participates in gap contact physics.
     void processSample (float driveSignal, float rawGate, float convFB, float& outL, float& outR)
     {
+        // Idle gate: skip all physics when output has been silent for kIdleThreshSamples.
+        if (idleGateEnabled && fullyIdle)
+        {
+            if (std::abs (driveSignal) >= kIdleDriveThresh)
+            {
+                fullyIdle   = false;
+                idleCounter = 0;
+            }
+            else
+            {
+                substratePos = substratePos * substrateLeak + driveSignal * (1.0f - substrateLeak);
+                outL = outR = 0.0f;
+                return;
+            }
+        }
+
         // 1. Substrate position: leaky integral of the drive signal.
         //    DC gain = 1: a constant drive of amplitude A → substratePos → A.
         substratePos = substratePos * substrateLeak + driveSignal * (1.0f - substrateLeak);
@@ -720,7 +752,17 @@ public:
         float F = 0.0f;
         if (inContact)
         {
-            const float softPen = gap0 * std::tanh (penetration / gap0);
+            float softPen;
+            if (useFastTanh)
+            {
+                const float x  = penetration / gap0;
+                const float x2 = x * x;
+                softPen = gap0 * x * (27.0f + x2) / (27.0f + 9.0f * x2);
+            }
+            else
+            {
+                softPen = gap0 * std::tanh (penetration / gap0);
+            }
             F = contactK * softPen * std::sqrt (softPen);  // k * p^1.5
             if (roughness > 0.001f)
                 F *= 1.0f + roughness * (rng.nextFloat() * 2.0f - 1.0f);
@@ -758,7 +800,9 @@ public:
             const float y      = excite + a1[m] * y1[m] + a2[m] * y2[m];
             y2[m] = y1[m];
 
-            if (std::isfinite (y))
+            if (useClamp)
+                y1[m] = juce::jlimit (-1e6f, 1e6f, y * decay);
+            else if (std::isfinite (y))
                 y1[m] = y * decay;
             else
                 y1[m] = y2[m] = 0.0f;
@@ -788,6 +832,27 @@ public:
         {
             outL = sumL;
             outR = sumR;
+        }
+
+        // Update idle counter — sleep after kIdleThreshSamples of near-silence.
+        if (idleGateEnabled)
+        {
+            if (std::abs (outL) + std::abs (outR) < kIdleOutputThresh
+                && std::abs (driveSignal) < kIdleDriveThresh)
+            {
+                if (++idleCounter >= kIdleThreshSamples)
+                {
+                    fullyIdle = true;
+                    for (int m = 0; m < kMaxModes; ++m)
+                        y1[m] = y2[m] = 0.0f;
+                    hpFilter.reset(); lpFilter.reset();
+                    hpFilterR.reset(); lpFilterR.reset();
+                }
+            }
+            else
+            {
+                idleCounter = 0;
+            }
         }
     }
 };

@@ -89,6 +89,10 @@ private:
 
         double sampleRate = 44100.0;
 
+        // DC-blocking filter state (per channel): y[n] = x[n] - x[n-1] + R*y[n-1]
+        float dcR = 0.9997f;
+        float dcxL = 0.0f, dcxR = 0.0f, dcyL = 0.0f, dcyR = 0.0f;
+
         static constexpr int kContactKernelMaxLen = 8192;
         float contactKernel[kContactKernelMaxLen] = {};
         int   contactKernelLen = 0;
@@ -98,6 +102,9 @@ private:
         void prepare (double sr, int maxBlock)
         {
             sampleRate = sr;
+            // DC blocker: R = 1 - 2π*fc/fs, fc ≈ 5 Hz
+            dcR  = 1.0f - juce::MathConstants<float>::twoPi * 5.0f / (float)sr;
+            dcxL = dcxR = dcyL = dcyR = 0.0f;
             trigFilter .prepare (sr, maxBlock);
             noiseModel .prepare (sr, maxBlock);
             bounceModel.prepare (sr, maxBlock);
@@ -258,6 +265,7 @@ private:
         float rattleTune, rattleDecay, rattleRough, rattleJitter, rattleTone, rattleSpread;
         float rattleFiltFreq, rattleFiltBw;
         bool  rattleModalSat, sourceFilterEn, trigFilterEn;
+        bool  rattleDCEn, rattleDCPre;
 
         bool  convEn;
         float convWet, convDryWet, convGain, convStart, convAttack, convSustain, convSplit;

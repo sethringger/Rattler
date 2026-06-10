@@ -7,6 +7,78 @@
 #include "IRPreviewComponent.h"
 #include "SamplePreviewComponent.h"
 
+// Label that lets the user drag up/down to scrub a value, or click/double-click
+// to type a value directly. Used as the text box for all rotary knobs.
+struct DraggableLabel : public juce::Label
+{
+    juce::Slider* slider = nullptr;
+
+    // Prevent JUCE from auto-showing the editor on click; we handle it ourselves.
+    void setEditable (bool, bool, bool) {}
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (!slider) return;
+        startValue = slider->getValue();
+        startScreenY = e.getScreenPosition().y;
+        wasDragged = false;
+        setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
+    }
+
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        if (!slider) return;
+        const int dy = e.getScreenPosition().y - startScreenY;
+        if (std::abs (dy) > 3) wasDragged = true;
+        if (wasDragged)
+        {
+            const double speed = e.mods.isShiftDown() ? 0.001 : 0.01;
+            const double p = juce::jlimit (0.0, 1.0,
+                slider->valueToProportionOfLength (startValue) - dy * speed);
+            slider->setValue (slider->proportionOfLengthToValue (p),
+                              juce::sendNotificationAsync);
+        }
+    }
+
+    void mouseUp (const juce::MouseEvent&) override
+    {
+        setMouseCursor (juce::MouseCursor::NormalCursor);
+        if (!wasDragged) showEditor();
+    }
+
+    void mouseDoubleClick (const juce::MouseEvent&) override { showEditor(); }
+
+private:
+    double startValue  = 0.0;
+    int    startScreenY = 0;
+    bool   wasDragged  = false;
+};
+
+// LookAndFeel that wires DraggableLabel into every slider text box.
+struct KnobLookAndFeel : public juce::LookAndFeel_V4
+{
+    juce::Label* createSliderTextBox (juce::Slider& s) override
+    {
+        auto* l = new DraggableLabel();
+        l->slider = &s;
+        l->setFont (juce::Font (juce::FontOptions (11.0f)));
+        l->setJustificationType (juce::Justification::centred);
+        l->setColour (juce::Label::textColourId,
+                      s.findColour (juce::Slider::textBoxTextColourId));
+        l->setColour (juce::Label::backgroundColourId,
+                      s.findColour (juce::Slider::textBoxBackgroundColourId));
+        l->setColour (juce::Label::outlineColourId,
+                      s.findColour (juce::Slider::textBoxOutlineColourId));
+        l->setColour (juce::TextEditor::textColourId,
+                      s.findColour (juce::Slider::textBoxTextColourId));
+        l->setColour (juce::TextEditor::backgroundColourId,
+                      s.findColour (juce::Slider::textBoxBackgroundColourId));
+        l->setColour (juce::TextEditor::highlightColourId,
+                      s.findColour (juce::Slider::thumbColourId).withAlpha (0.5f));
+        return l;
+    }
+};
+
 // Pill-style toggle button look — replaces the default checkbox tick with a
 // compact LED dot + label drawn as a rounded button that lights up when active.
 struct PillToggleLookAndFeel : public juce::LookAndFeel_V4
@@ -79,12 +151,21 @@ private:
     juce::Label        masterMixLabel;
     juce::Slider       masterSatSlider;
     juce::Label        masterSatLabel;
-    juce::TextButton routingParallelBtn;
-    juce::TextButton routingSeqBtn;
+    juce::TextButton   routingParallelBtn;
+    juce::TextButton   routingSeqBtn;
+    juce::ToggleButton advancedToggle;
+    bool               showAdvanced = false;
 
     // --- Tab buttons ---
     juce::TextButton sourceTabBtn, triggerTabBtn, resonatorTabBtn, convolutionTabBtn;
-    int currentTab = 0; // 0=SOURCE, 1=TRIGGER, 2=RESONATOR, 3=CONVOLUTION
+    juce::TextButton gearTabBtn;
+    int currentTab = 0; // 0=SOURCE, 1=TRIGGER, 2=RESONATOR, 3=CONVOLUTION, 4=SETTINGS
+
+    // --- Performance toggles (live in gear tab) ---
+    juce::ToggleButton modalClampToggle;
+    juce::ToggleButton fastTanhToggle;
+    juce::ToggleButton idleGateToggle;
+    juce::ToggleButton convSkipToggle;
 
     // --- Vertical layer enable button ---
     struct VerticalButton : public juce::Component
@@ -156,8 +237,9 @@ private:
         std::unique_ptr<FilterXYPad> sampleFilterXY;
 
         // SOURCE TAB — ModalRattle mode
-        juce::Slider   rattleGapSlider, rattleKSlider, rattleJitterSlider;
-        juce::Label    rattleGapLabel,  rattleKLabel,  rattleJitterLabel;
+        juce::Slider       rattleGapSlider, rattleKSlider, rattleJitterSlider;
+        juce::Label        rattleGapLabel,  rattleKLabel,  rattleJitterLabel;
+        juce::ToggleButton rattleDCToggle, rattleDCPreToggle;
         std::unique_ptr<FilterXYPad> rattleFilterXY;
 
         // TRIGGER TAB
@@ -231,6 +313,7 @@ private:
         std::unique_ptr<ButtonAtt> rattleModalSatAttach;
         std::unique_ptr<ButtonAtt> sourceFilterEnableAttach;
         std::unique_ptr<ButtonAtt> trigFilterEnableAttach;
+        std::unique_ptr<ButtonAtt> rattleDCAttach, rattleDCPreAttach;
         std::unique_ptr<ButtonAtt> convEnableAttach;
         std::unique_ptr<SliderAtt> convWetAttach;
         std::unique_ptr<SliderAtt> convDryWetAttach;
@@ -267,7 +350,8 @@ private:
         juce::TextButton convPitch60Btn, convPitch10Btn, convPitchRTBtn;
     };
 
-    // Must be declared before layerUIs so it outlives all ToggleButtons that reference it.
+    // Must be declared before layerUIs so they outlive all controls that reference them.
+    KnobLookAndFeel       knobLnf;
     PillToggleLookAndFeel pillToggleLnf;
 
     LayerUI layerUIs[2];
@@ -278,6 +362,10 @@ private:
 
     std::unique_ptr<SliderAtt> masterMixAttach, masterSatAttach;
     std::unique_ptr<juce::ParameterAttachment> routingAttach;
+    std::unique_ptr<ButtonAtt> modalClampAttach;
+    std::unique_ptr<ButtonAtt> fastTanhAttach;
+    std::unique_ptr<ButtonAtt> idleGateAttach;
+    std::unique_ptr<ButtonAtt> convSkipAttach;
     using ComboAtt = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
 
     VerticalButton layerBtns[2];
