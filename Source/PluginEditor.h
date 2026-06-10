@@ -2,6 +2,7 @@
 
 #include "PluginProcessor.h"
 #include "PresetManager.h"
+#include "IRManager.h"
 #include "FilterXYPad.h"
 #include "TriggerXYPad.h"
 #include "TuneDecayPad.h"
@@ -146,6 +147,9 @@ public:
 
 private:
     RattlerAudioProcessor& audioProcessor;
+
+    // --- IR Manager (shared catalog, per-layer selection tracked in LayerUI) ---
+    std::unique_ptr<IRManager> irManager;
 
     // --- Preset strip ---
     std::unique_ptr<PresetManager> presetManager;
@@ -293,7 +297,11 @@ private:
         juce::Label        convStartLabel;
         juce::Slider       convSplitSlider;
         juce::Label        convSplitLabel;
-        juce::TextButton   loadConvIRBtn;
+        // IR browser strip (replaces the old "Load IR" button)
+        juce::TextButton   prevIRBtn;
+        juce::TextButton   irNameBtn;
+        juce::TextButton   nextIRBtn;
+        int                currentIRIndex = -1;
         std::unique_ptr<IRPreviewComponent> irPreview;
         std::unique_ptr<juce::FileChooser> convFileChooser;
 
@@ -395,6 +403,10 @@ private:
     void showPresetMenu();
     void showSaveAsDialog();
     void updatePresetDisplay();
+    void showIRMenu     (int layerIdx);
+    void browseForIR    (int layerIdx);
+    void loadIREntry    (int entryIdx, int layerIdx);
+    void updateIRBrowser(int layerIdx);
 
     RattlerAudioProcessor::LayerMode getLayerMode (int idx) const;
 

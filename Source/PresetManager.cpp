@@ -1,4 +1,5 @@
 #include "PresetManager.h"
+#include "IRManager.h"
 #include "PluginProcessor.h"
 
 PresetManager::PresetManager (RattlerAudioProcessor& p) : processor (p)
@@ -6,12 +7,10 @@ PresetManager::PresetManager (RattlerAudioProcessor& p) : processor (p)
     getPresetsFolder().createDirectory();
     scan();
 
-    // Restore name from a previously-saved project state.
     currentName = processor.apvts.state
         .getProperty ("presetName", "Untitled").toString();
     if (currentName.isEmpty()) currentName = "Untitled";
 
-    // Find the matching file index if the name corresponds to a preset on disk.
     const auto names = getPresetNames();
     for (int i = 0; i < names.size(); ++i)
         if (names[i] == currentName) { currentIndex = i; break; }
@@ -46,10 +45,19 @@ void PresetManager::loadPreset (int index)
     const juce::String samA = xml->getStringAttribute ("samplePathA");
     const juce::String samB = xml->getStringAttribute ("samplePathB");
 
-    juce::MessageManager::callAsync ([this, irA, irB, samA, samB]
+    IRManager* irm = irManager;
+    juce::MessageManager::callAsync ([this, irm, irA, irB, samA, samB]
     {
-        if (irA.isNotEmpty())  { juce::File f (irA);  if (f.existsAsFile()) processor.loadConvIR    (0, f); }
-        if (irB.isNotEmpty())  { juce::File f (irB);  if (f.existsAsFile()) processor.loadConvIR    (1, f); }
+        if (irA.isNotEmpty())
+        {
+            if (irm) irm->loadFromPortable (irA, 0);
+            else     { juce::File f (irA); if (f.existsAsFile()) processor.loadConvIR (0, f); }
+        }
+        if (irB.isNotEmpty())
+        {
+            if (irm) irm->loadFromPortable (irB, 1);
+            else     { juce::File f (irB); if (f.existsAsFile()) processor.loadConvIR (1, f); }
+        }
         if (samA.isNotEmpty()) { juce::File f (samA); if (f.existsAsFile()) processor.loadSampleFile (0, f); }
         if (samB.isNotEmpty()) { juce::File f (samB); if (f.existsAsFile()) processor.loadSampleFile (1, f); }
     });
@@ -78,10 +86,17 @@ void PresetManager::saveCurrentAs (const juce::String& name)
     const juce::String safe = name.trim().replaceCharacters ("\\/:*?\"<>|", "_________");
     if (safe.isEmpty()) return;
 
+    // Use portable IR paths if IRManager is wired up
+    auto irPath = [&] (int layerIdx) -> juce::String
+    {
+        const juce::String abs = processor.getConvIRFilePath (layerIdx);
+        return irManager ? irManager->toPortable (abs) : abs;
+    };
+
     auto state = processor.apvts.copyState();
     auto xml   = state.createXml();
-    xml->setAttribute ("irPathA",     processor.getConvIRFilePath (0));
-    xml->setAttribute ("irPathB",     processor.getConvIRFilePath (1));
+    xml->setAttribute ("irPathA",     irPath (0));
+    xml->setAttribute ("irPathB",     irPath (1));
     xml->setAttribute ("samplePathA", processor.getSampleFilePath (0));
     xml->setAttribute ("samplePathB", processor.getSampleFilePath (1));
 

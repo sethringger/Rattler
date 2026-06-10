@@ -2,6 +2,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 class RattlerAudioProcessor;
+class IRManager;
 
 class PresetManager
 {
@@ -20,11 +21,13 @@ public:
     void deletePreset  (int index);
 
     void setCurrentName (const juce::String& name) { currentName = name; }
+    void setIRManager   (IRManager* m)              { irManager = m; }
 
     std::function<void()> onChange;
 
 private:
     RattlerAudioProcessor&  processor;
+    IRManager*              irManager = nullptr;
     juce::Array<juce::File> files;
     int                     currentIndex = -1;
     juce::String            currentName  = "Untitled";

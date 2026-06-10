@@ -184,13 +184,14 @@ RattlerAudioProcessorEditor::RattlerAudioProcessorEditor (RattlerAudioProcessor&
         addAndMakeVisible (layerBtns[i]);
     }
 
-    // Restore IR button label and preview if a project was loaded before the editor opened
+    // Restore IR browser state if a project was loaded before the editor opened
     for (int i = 0; i < 2; ++i)
     {
         const juce::String path = audioProcessor.getConvIRFilePath (i);
         if (path.isNotEmpty())
         {
-            layerUIs[i].loadConvIRBtn.setButtonText (juce::File (path).getFileNameWithoutExtension());
+            layerUIs[i].currentIRIndex = irManager->findCurrentIndex (i);
+            updateIRBrowser (i);
             updateIRPreview (i);
         }
     }
@@ -198,7 +199,12 @@ RattlerAudioProcessorEditor::RattlerAudioProcessorEditor (RattlerAudioProcessor&
     // Keep preview in sync when IR is (re-)loaded asynchronously (e.g. project restore)
     audioProcessor.onConvIRLoaded = [this] (int idx)
     {
-        juce::MessageManager::callAsync ([this, idx] { updateIRPreview (idx); });
+        juce::MessageManager::callAsync ([this, idx]
+        {
+            layerUIs[idx].currentIRIndex = irManager->findCurrentIndex (idx);
+            updateIRBrowser (idx);
+            updateIRPreview (idx);
+        });
     };
 
     audioProcessor.onSampleLoaded = [this] (int idx)
@@ -206,8 +212,12 @@ RattlerAudioProcessorEditor::RattlerAudioProcessorEditor (RattlerAudioProcessor&
         juce::MessageManager::callAsync ([this, idx] { updateSamplePreview (idx); });
     };
 
+    // ── IR Manager ───────────────────────────────────────────────────────────
+    irManager = std::make_unique<IRManager> (p);
+
     // ── Preset strip ─────────────────────────────────────────────────────────
     presetManager = std::make_unique<PresetManager> (p);
+    presetManager->setIRManager (irManager.get());
     presetManager->onChange = [this] { updatePresetDisplay(); };
 
     auto setupPresetBtn = [&] (juce::TextButton& btn, const juce::String& text)
@@ -712,30 +722,29 @@ void RattlerAudioProcessorEditor::setupLayerUI (int idx,
     };
     applyConvEnabled (idx, apvts.getRawParameterValue (p + "ConvEnable")->load() > 0.5f);
 
-    ui.loadConvIRBtn.setButtonText ("Load IR");
-    ui.loadConvIRBtn.setColour (juce::TextButton::buttonColourId,  juce::Colour (0xff333333));
-    ui.loadConvIRBtn.setColour (juce::TextButton::buttonOnColourId, kAccent);
-    ui.loadConvIRBtn.setColour (juce::TextButton::textColourOffId,  kText);
-    ui.loadConvIRBtn.onClick = [this, idx, p]
+    // IR browser strip
+    auto setupIRBtn = [&] (juce::TextButton& btn, const juce::String& text)
     {
-        auto& ui2 = layerUIs[idx];
-        ui2.convFileChooser = std::make_unique<juce::FileChooser> (
-            "Load impulse response",
-            juce::File::getSpecialLocation (juce::File::userDesktopDirectory),
-            "*.wav;*.aiff;*.aif;*.flac");
-        ui2.convFileChooser->launchAsync (
-            juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-            [this, idx] (const juce::FileChooser& fc)
-            {
-                auto f = fc.getResult();
-                if (f.existsAsFile())
-                {
-                    audioProcessor.loadConvIR (idx, f);
-                    layerUIs[idx].loadConvIRBtn.setButtonText (f.getFileNameWithoutExtension());
-                    updateIRPreview (idx);
-                }
-            });
+        btn.setButtonText (text);
+        btn.setColour (juce::TextButton::buttonColourId,   juce::Colour (0xff1e1e1e));
+        btn.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff1e3050));
+        btn.setColour (juce::TextButton::textColourOffId,  kSubtext);
+        btn.setColour (juce::TextButton::textColourOnId,   kAccent);
+        addChildComponent (btn);
     };
+    setupIRBtn (ui.prevIRBtn, "<");
+    setupIRBtn (ui.nextIRBtn, ">");
+    ui.irNameBtn.setButtonText ("No IR");
+    ui.irNameBtn.setColour (juce::TextButton::buttonColourId,   juce::Colour (0xff151515));
+    ui.irNameBtn.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff202020));
+    ui.irNameBtn.setColour (juce::TextButton::textColourOffId,  kSubtext);
+    ui.irNameBtn.setColour (juce::TextButton::textColourOnId,   kText);
+    addChildComponent (ui.irNameBtn);
+
+    ui.prevIRBtn.onClick = [this, idx] { loadIREntry (layerUIs[idx].currentIRIndex - 1, idx); };
+    ui.nextIRBtn.onClick = [this, idx] { loadIREntry (layerUIs[idx].currentIRIndex + 1, idx); };
+    ui.irNameBtn.onClick = [this, idx] { showIRMenu (idx); };
+
     // Visible controls
     addChildComponent (ui.convEnableToggle);
     addChildComponent (ui.convWetSlider);    addChildComponent (ui.convWetLabel);
@@ -743,7 +752,6 @@ void RattlerAudioProcessorEditor::setupLayerUI (int idx,
     addChildComponent (ui.convPitchSlider);  addChildComponent (ui.convPitchLabel);
     addChildComponent (ui.convGainSlider);   addChildComponent (ui.convGainLabel);
     addChildComponent (*ui.irPreview);
-    addChildComponent (ui.loadConvIRBtn);
     // Hidden APVTS-backing sliders (never set visible)
     addChildComponent (ui.convDecaySlider);
     addChildComponent (ui.convAttackSlider);
@@ -870,7 +878,9 @@ void RattlerAudioProcessorEditor::setLayerVisible (int idx, bool v)
     ui.convPitch10Btn  .setVisible (v);
     ui.convPitchRTBtn  .setVisible (v);
     ui.irPreview->setVisible (v);
-    ui.loadConvIRBtn   .setVisible (v);
+    ui.prevIRBtn       .setVisible (v);
+    ui.irNameBtn       .setVisible (v);
+    ui.nextIRBtn       .setVisible (v);
 }
 
 // =============================================================================
@@ -914,7 +924,9 @@ void RattlerAudioProcessorEditor::setLayerEnabled (int idx, bool en)
     ui.rattleMaterialCombo   .setEnabled (en);
     ui.rattleModalSatToggle  .setEnabled (en);
     ui.convEnableToggle      .setEnabled (en);
-    ui.loadConvIRBtn         .setEnabled (en);
+    ui.prevIRBtn             .setEnabled (en);
+    ui.irNameBtn             .setEnabled (en);
+    ui.nextIRBtn             .setEnabled (en);
     applyConvEnabled (idx, en && ui.convEnableToggle.getToggleState());
 
     // XY pads: respect their individual filter toggles when re-enabling
@@ -1240,13 +1252,20 @@ void RattlerAudioProcessorEditor::layoutLayer (int idx)
         ui.convPitch10Btn  .setVisible (showAdvanced);
         ui.convPitchRTBtn  .setVisible (showAdvanced);
 
-        // Right panel: IR preview + load button
-        const int btnH     = 22;
-        const int previewH = kRowH - xyPadV * 2 - btnH - 4;
-        ui.irPreview->setBounds    (xyX, rowY + xyPadV, xyW, previewH);
-        ui.loadConvIRBtn.setBounds (xyX, rowY + xyPadV + previewH + 4, xyW, btnH);
+        // Right panel: IR preview + browser strip
+        constexpr int browserH  = 22;
+        constexpr int arrowW    = 22;
+        constexpr int browserGap = 3;
+        const int previewH = kRowH - xyPadV * 2 - browserH - browserGap;
+        const int browserY = rowY + xyPadV + previewH + browserGap;
+        ui.irPreview->setBounds (xyX, rowY + xyPadV, xyW, previewH);
+        ui.prevIRBtn .setBounds (xyX,                   browserY, arrowW,              browserH);
+        ui.irNameBtn .setBounds (xyX + arrowW,          browserY, xyW - arrowW * 2,    browserH);
+        ui.nextIRBtn .setBounds (xyX + xyW - arrowW,    browserY, arrowW,              browserH);
         ui.irPreview->setVisible (true);
-        ui.loadConvIRBtn.setVisible (true);
+        ui.prevIRBtn .setVisible (true);
+        ui.irNameBtn .setVisible (true);
+        ui.nextIRBtn .setVisible (true);
     }
 }
 
@@ -1489,8 +1508,9 @@ void RattlerAudioProcessorEditor::filesDropped (const juce::StringArray& files, 
         {
             if (currentTab == 3)
             {
-                audioProcessor.loadConvIR (layerIdx, f);
-                layerUIs[layerIdx].loadConvIRBtn.setButtonText (f.getFileNameWithoutExtension());
+                const int newIdx = irManager->addUserIR (f, layerIdx);
+                layerUIs[layerIdx].currentIRIndex = newIdx;
+                updateIRBrowser (layerIdx);
                 updateIRPreview (layerIdx);
             }
             else
@@ -1511,6 +1531,86 @@ void RattlerAudioProcessorEditor::updatePresetDisplay()
     presetNameBtn.setButtonText (presetManager->getCurrentName());
 }
 
+// =============================================================================
+// IR helpers
+// =============================================================================
+void RattlerAudioProcessorEditor::updateIRBrowser (int layerIdx)
+{
+    auto& ui = layerUIs[layerIdx];
+    const int  cur     = ui.currentIRIndex;
+    const auto entries = irManager->getEntries();
+    const juce::String name = (cur >= 0 && cur < entries.size())
+                                  ? entries[cur].name
+                                  : "No IR";
+    ui.irNameBtn.setButtonText (name);
+    ui.prevIRBtn.setEnabled (cur > 0);
+    ui.nextIRBtn.setEnabled (cur >= 0 && cur < entries.size() - 1);
+}
+
+void RattlerAudioProcessorEditor::loadIREntry (int entryIdx, int layerIdx)
+{
+    const int n = irManager->getNumEntries();
+    if (n == 0) return;
+    entryIdx = juce::jlimit (0, n - 1, entryIdx);
+    irManager->loadEntry (entryIdx, layerIdx);
+    layerUIs[layerIdx].currentIRIndex = entryIdx;
+    updateIRBrowser (layerIdx);
+    updateIRPreview (layerIdx);
+}
+
+void RattlerAudioProcessorEditor::showIRMenu (int layerIdx)
+{
+    juce::PopupMenu menu;
+    const auto& entries = irManager->getEntries();
+    const int   cur     = layerUIs[layerIdx].currentIRIndex;
+
+    for (int i = 0; i < entries.size(); ++i)
+        menu.addItem (i + 1, entries[i].name, true, i == cur);
+
+    if (entries.isEmpty())
+        menu.addItem (1, "(no IRs in library)", false, false);
+
+    menu.addSeparator();
+    menu.addItem (entries.size() + 1, "Browse files...");
+
+    menu.showMenuAsync (
+        juce::PopupMenu::Options().withTargetComponent (layerUIs[layerIdx].irNameBtn),
+        [this, layerIdx, count = entries.size()] (int result)
+        {
+            if (result == 0) return;
+            if (result <= count)
+                loadIREntry (result - 1, layerIdx);
+            else if (result == count + 1)
+                browseForIR (layerIdx);
+        });
+}
+
+void RattlerAudioProcessorEditor::browseForIR (int layerIdx)
+{
+    auto& ui = layerUIs[layerIdx];
+    ui.convFileChooser = std::make_unique<juce::FileChooser> (
+        "Load impulse response",
+        juce::File::getSpecialLocation (juce::File::userDesktopDirectory),
+        "*.wav;*.aiff;*.aif;*.flac");
+
+    ui.convFileChooser->launchAsync (
+        juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+        [this, layerIdx] (const juce::FileChooser& fc)
+        {
+            const auto f = fc.getResult();
+            if (f.existsAsFile())
+            {
+                const int newIdx = irManager->addUserIR (f, layerIdx);
+                layerUIs[layerIdx].currentIRIndex = newIdx;
+                updateIRBrowser (layerIdx);
+                updateIRPreview (layerIdx);
+            }
+        });
+}
+
+// =============================================================================
+// Preset helpers
+// =============================================================================
 void RattlerAudioProcessorEditor::showPresetMenu()
 {
     juce::PopupMenu menu;
