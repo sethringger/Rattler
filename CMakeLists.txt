@@ -46,6 +46,7 @@ target_sources(Rattler
     PRIVATE
         Source/PluginProcessor.cpp
         Source/PluginEditor.cpp
+        Source/PresetManager.cpp
 )
 
 target_link_libraries(Rattler

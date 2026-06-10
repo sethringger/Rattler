@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PluginProcessor.h"
+#include "PresetManager.h"
 #include "FilterXYPad.h"
 #include "TriggerXYPad.h"
 #include "TuneDecayPad.h"
@@ -145,6 +146,13 @@ public:
 
 private:
     RattlerAudioProcessor& audioProcessor;
+
+    // --- Preset strip ---
+    std::unique_ptr<PresetManager> presetManager;
+    juce::TextButton               prevPresetBtn;
+    juce::TextButton               nextPresetBtn;
+    juce::TextButton               presetNameBtn;
+    juce::TextButton               savePresetBtn;
 
     // --- Global strip ---
     juce::Slider       masterMixSlider;
@@ -377,13 +385,16 @@ private:
     void switchToTab (int tab);
     void layoutKnob (juce::Slider&, juce::Label&, juce::Rectangle<int>);
 
-    void setupLayerUI       (int idx, juce::AudioProcessorValueTreeState&);
-    void setLayerVisible    (int idx, bool v);
-    void setLayerEnabled    (int idx, bool enabled);
-    void applyConvEnabled   (int idx, bool on);
-    void layoutLayer        (int idx);
+    void setupLayerUI        (int idx, juce::AudioProcessorValueTreeState&);
+    void setLayerVisible     (int idx, bool v);
+    void setLayerEnabled     (int idx, bool enabled);
+    void applyConvEnabled    (int idx, bool on);
+    void layoutLayer         (int idx);
     void updateIRPreview     (int idx);
     void updateSamplePreview (int idx);
+    void showPresetMenu();
+    void showSaveAsDialog();
+    void updatePresetDisplay();
 
     RattlerAudioProcessor::LayerMode getLayerMode (int idx) const;
 

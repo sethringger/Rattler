@@ -16,17 +16,18 @@ static const juce::Colour kGrid    { 0xff2a2a2a };
 // Layout constants
 // =============================================================================
 static constexpr int kW        = 640;
+static constexpr int kPresetH  = 34;   // preset strip at top
 static constexpr int kGlobalH  = 80;
 static constexpr int kTabBarH  = 28;
 static constexpr int kRowH     = 250;
 static constexpr int kRowGap   = 10;   // vertical gap between the two layer rows
 static constexpr int kTabContH = kRowH * 2 + kRowGap;
-static constexpr int kH        = kGlobalH + kTabBarH + kTabContH;
+static constexpr int kH        = kPresetH + kGlobalH + kTabBarH + kTabContH;
 static constexpr int kLeftW    = 300;
 static constexpr int kPad      = 8;    // window-edge to outer-box gap
 static constexpr int kBoxInset = 6;    // inset from outer box to its contents
 static constexpr int kLBtnW    = kBoxInset + 18 + kBoxInset; // left-gap(6) + btn(18) + right-gap(6) = 30
-static constexpr int kContentY = kGlobalH + kTabBarH;
+static constexpr int kContentY = kPresetH + kGlobalH + kTabBarH;
 static constexpr int kHeaderH  = 24;   // top of each row: mode combo strip
 
 // =============================================================================
@@ -204,6 +205,40 @@ RattlerAudioProcessorEditor::RattlerAudioProcessorEditor (RattlerAudioProcessor&
     {
         juce::MessageManager::callAsync ([this, idx] { updateSamplePreview (idx); });
     };
+
+    // ── Preset strip ─────────────────────────────────────────────────────────
+    presetManager = std::make_unique<PresetManager> (p);
+    presetManager->onChange = [this] { updatePresetDisplay(); };
+
+    auto setupPresetBtn = [&] (juce::TextButton& btn, const juce::String& text)
+    {
+        btn.setButtonText (text);
+        btn.setColour (juce::TextButton::buttonColourId,   juce::Colour (0xff1e1e1e));
+        btn.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff1e3050));
+        btn.setColour (juce::TextButton::textColourOffId,  kSubtext);
+        btn.setColour (juce::TextButton::textColourOnId,   kAccent);
+        addAndMakeVisible (btn);
+    };
+    setupPresetBtn (prevPresetBtn, "<");
+    setupPresetBtn (nextPresetBtn, ">");
+    setupPresetBtn (savePresetBtn, "Save");
+    prevPresetBtn.onClick = [this] { presetManager->prevPreset(); };
+    nextPresetBtn.onClick = [this] { presetManager->nextPreset(); };
+    savePresetBtn.onClick = [this]
+    {
+        if (presetManager->getCurrentIndex() < 0)
+            showSaveAsDialog();
+        else
+            presetManager->saveCurrentAs (presetManager->getCurrentName());
+    };
+
+    presetNameBtn.setButtonText (presetManager->getCurrentName());
+    presetNameBtn.setColour (juce::TextButton::buttonColourId,   juce::Colour (0xff151515));
+    presetNameBtn.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff202020));
+    presetNameBtn.setColour (juce::TextButton::textColourOffId,  kText);
+    presetNameBtn.setColour (juce::TextButton::textColourOnId,   kText);
+    presetNameBtn.onClick = [this] { showPresetMenu(); };
+    addAndMakeVisible (presetNameBtn);
 
     switchToTab (0);
     setSize (kW, kH);
@@ -1237,15 +1272,19 @@ void RattlerAudioProcessorEditor::paint (juce::Graphics& g)
 {
     g.fillAll (kBg);
 
+    // Preset bar — separator line and logo
     g.setColour (kGrid);
-    g.drawHorizontalLine (kGlobalH - 1, 0.0f, (float)kW);
-
+    g.drawHorizontalLine (kPresetH - 1, 0.0f, (float)kW);
     g.setColour (kAccent);
-    g.setFont (juce::Font (juce::FontOptions (18.0f).withStyle ("Bold")));
-    g.drawText ("RATTLER", 10, 0, 100, kGlobalH, juce::Justification::centredLeft);
+    g.setFont (juce::Font (juce::FontOptions (14.0f).withStyle ("Bold")));
+    g.drawText ("RATTLER", kPad, 0, 88, kPresetH, juce::Justification::centredLeft);
+
+    // Global strip — separator line below it
+    g.setColour (kGrid);
+    g.drawHorizontalLine (kPresetH + kGlobalH - 1, 0.0f, (float)kW);
 
     g.setColour (juce::Colour (0xff1e1e1e));
-    g.fillRect (0, kGlobalH, kW, kTabBarH);
+    g.fillRect (0, kPresetH + kGlobalH, kW, kTabBarH);
 
     // Accent underline on active tab
     {
@@ -1255,11 +1294,11 @@ void RattlerAudioProcessorEditor::paint (juce::Graphics& g)
         if (currentTab < 4) { ax = currentTab * mainTabW; aw = mainTabW; }
         else                 { ax = kW - gearW;            aw = gearW;    }
         g.setColour (kAccent);
-        g.fillRect (ax, kGlobalH + kTabBarH - 2, aw, 2);
+        g.fillRect (ax, kContentY - 2, aw, 2);
     }
 
     g.setColour (kGrid);
-    g.drawHorizontalLine (kGlobalH + kTabBarH, 0.0f, (float)kW);
+    g.drawHorizontalLine (kContentY, 0.0f, (float)kW);
 
     // Gear tab: paint section header, skip layer boxes
     if (currentTab == 4)
@@ -1307,15 +1346,35 @@ void RattlerAudioProcessorEditor::paint (juce::Graphics& g)
 // =============================================================================
 void RattlerAudioProcessorEditor::resized()
 {
+    // ── Preset strip ─────────────────────────────────────────────────────────
+    {
+        constexpr int arrowW  = 24;
+        constexpr int saveW   = 55;
+        constexpr int gap     = 4;
+        constexpr int logoW   = 96;   // matches painted RATTLER text area
+        constexpr int btnH    = 22;
+        const     int btnY    = (kPresetH - btnH) / 2;
+        const     int arrow1X = kPad + logoW + gap;
+        const     int saveX   = kW - kPad - saveW;
+        const     int arrow2X = saveX - gap - arrowW;
+        const     int nameX   = arrow1X + arrowW + gap;
+        const     int nameW   = arrow2X - gap - nameX;
+
+        prevPresetBtn .setBounds (arrow1X, btnY, arrowW, btnH);
+        presetNameBtn .setBounds (nameX,   btnY, nameW,  btnH);
+        nextPresetBtn .setBounds (arrow2X, btnY, arrowW, btnH);
+        savePresetBtn .setBounds (saveX,   btnY, saveW,  btnH);
+    }
+
     // ── Global strip ─────────────────────────────────────────────────────────
     {
-        const int y  = 4;
+        const int y  = kPresetH + 4;
         const int h  = kGlobalH - 8;
         const int kw = 60;
         layoutKnob (masterMixSlider, masterMixLabel, { 108,      y, kw, h });
         layoutKnob (masterSatSlider, masterSatLabel, { 108+kw+4, y, kw, h });
 
-        const int togY   = (kGlobalH - 26) / 2;
+        const int togY   = kPresetH + (kGlobalH - 26) / 2;
         const int routeX = 108 + kw * 2 + 16;
         routingParallelBtn.setBounds (routeX,      togY, 85, 26);
         routingSeqBtn     .setBounds (routeX + 85, togY, 95, 26);
@@ -1324,13 +1383,14 @@ void RattlerAudioProcessorEditor::resized()
 
     // ── Tab buttons (4 main + 1 gear) ────────────────────────────────────────
     {
+        const int tabY    = kPresetH + kGlobalH;
         const int gearW   = 36;
         const int mainTabW = (kW - gearW) / 4;
-        sourceTabBtn     .setBounds (0,            kGlobalH, mainTabW,       kTabBarH);
-        triggerTabBtn    .setBounds (mainTabW,     kGlobalH, mainTabW,       kTabBarH);
-        resonatorTabBtn  .setBounds (mainTabW * 2, kGlobalH, mainTabW,       kTabBarH);
-        convolutionTabBtn.setBounds (mainTabW * 3, kGlobalH, mainTabW,       kTabBarH);
-        gearTabBtn       .setBounds (kW - gearW,   kGlobalH, gearW,          kTabBarH);
+        sourceTabBtn     .setBounds (0,            tabY, mainTabW, kTabBarH);
+        triggerTabBtn    .setBounds (mainTabW,     tabY, mainTabW, kTabBarH);
+        resonatorTabBtn  .setBounds (mainTabW * 2, tabY, mainTabW, kTabBarH);
+        convolutionTabBtn.setBounds (mainTabW * 3, tabY, mainTabW, kTabBarH);
+        gearTabBtn       .setBounds (kW - gearW,   tabY, gearW,    kTabBarH);
     }
 
     // ── Layer enable buttons ─────────────────────────────────────────────────
@@ -1441,4 +1501,63 @@ void RattlerAudioProcessorEditor::filesDropped (const juce::StringArray& files, 
             break;
         }
     }
+}
+
+// =============================================================================
+// Preset helpers
+// =============================================================================
+void RattlerAudioProcessorEditor::updatePresetDisplay()
+{
+    presetNameBtn.setButtonText (presetManager->getCurrentName());
+}
+
+void RattlerAudioProcessorEditor::showPresetMenu()
+{
+    juce::PopupMenu menu;
+    const auto names  = presetManager->getPresetNames();
+    const int  cur    = presetManager->getCurrentIndex();
+
+    for (int i = 0; i < names.size(); ++i)
+        menu.addItem (i + 1, names[i], true, i == cur);
+
+    if (names.isEmpty())
+        menu.addItem (1, "(no presets saved)", false, false);
+
+    menu.addSeparator();
+    menu.addItem (names.size() + 1, "Save As...");
+    if (cur >= 0)
+        menu.addItem (names.size() + 2, "Delete \"" + presetManager->getCurrentName() + "\"");
+
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (presetNameBtn),
+        [this, count = names.size()] (int result)
+        {
+            if (result == 0) return;
+            if (result <= count)
+                presetManager->loadPreset (result - 1);
+            else if (result == count + 1)
+                showSaveAsDialog();
+            else if (result == count + 2)
+                presetManager->deletePreset (presetManager->getCurrentIndex());
+        });
+}
+
+void RattlerAudioProcessorEditor::showSaveAsDialog()
+{
+    auto* aw = new juce::AlertWindow ("Save Preset As",
+                                      "Enter a name for this preset:",
+                                      juce::MessageBoxIconType::NoIcon);
+    aw->addTextEditor ("name", presetManager->getCurrentName(), "Name:");
+    aw->addButton ("Save",   1, juce::KeyPress (juce::KeyPress::returnKey));
+    aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    aw->enterModalState (true,
+        juce::ModalCallbackFunction::create ([this, aw] (int result)
+        {
+            if (result == 1)
+            {
+                const juce::String name = aw->getTextEditorContents ("name").trim();
+                if (name.isNotEmpty())
+                    presetManager->saveCurrentAs (name);
+            }
+            delete aw;
+        }), false);
 }
