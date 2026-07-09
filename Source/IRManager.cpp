@@ -1,13 +1,39 @@
 #include "IRManager.h"
 #include "PluginProcessor.h"
+#include <BinaryData.h>
 
-// When factory IRs are added via juce_add_binary_data, include BinaryData.h here:
-// #include <BinaryData.h>
 
 IRManager::IRManager (RattlerAudioProcessor& p) : processor (p)
 {
     getUserIRFolder().createDirectory();
+    extractFactoryIRsIfNeeded();
     scan();
+}
+
+void IRManager::extractFactoryIRsIfNeeded()
+{
+    const juce::File folder = getUserIRFolder();
+    const int n = RattlerBinaryData::namedResourceListSize;
+
+    for (int i = 0; i < n; ++i)
+    {
+        const juce::String original (RattlerBinaryData::originalFilenames[i]);
+        if (!original.endsWithIgnoreCase (".wav")
+            && !original.endsWithIgnoreCase (".aif")
+            && !original.endsWithIgnoreCase (".aiff")
+            && !original.endsWithIgnoreCase (".flac"))
+            continue;
+
+        const juce::File dest = folder.getChildFile (original);
+        if (dest.existsAsFile()) continue;
+
+        int dataSize = 0;
+        const void* data = RattlerBinaryData::getNamedResource (
+            RattlerBinaryData::namedResourceList[i], dataSize);
+        if (!data || dataSize <= 0) continue;
+
+        dest.replaceWithData (data, (size_t)dataSize);
+    }
 }
 
 juce::File IRManager::getUserIRFolder() const

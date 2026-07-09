@@ -50,9 +50,11 @@ public:
     std::function<void(int /*layerIdx*/)> onConvIRLoaded;
     std::function<void(int /*layerIdx*/)> onSampleLoaded;
 
+    static constexpr int kNumLayers = 2;
+
     // Written from UI thread, read from audio thread — controls real-time pitch shift mode.
-    std::atomic<float> convPitchRTRatio[2];
-    std::atomic<bool>  convUseRTPitch[2];
+    std::atomic<float> convPitchRTRatio[kNumLayers];
+    std::atomic<bool>  convUseRTPitch[kNumLayers];
 
     enum class LayerMode { Noise = 0, Bounce, Sample, ModalRattle };
 
@@ -282,7 +284,7 @@ private:
                                     const LayerParams& p, bool convActive,
                                     float& outL, float& outR);
 
-    Layer     layers[2];
+    Layer     layers[kNumLayers];
     Saturator masterSat;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RattlerAudioProcessor)

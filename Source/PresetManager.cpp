@@ -1,10 +1,13 @@
 #include "PresetManager.h"
 #include "IRManager.h"
 #include "PluginProcessor.h"
+#include <BinaryData.h>
+
 
 PresetManager::PresetManager (RattlerAudioProcessor& p) : processor (p)
 {
     getPresetsFolder().createDirectory();
+    extractFactoryPresetsIfNeeded();
     scan();
 
     currentName = processor.apvts.state
@@ -146,4 +149,26 @@ void PresetManager::scan()
 
     if (currentIndex >= files.size())
         currentIndex = files.isEmpty() ? -1 : files.size() - 1;
+}
+
+void PresetManager::extractFactoryPresetsIfNeeded()
+{
+    const juce::File folder = getPresetsFolder();
+    const int n = RattlerBinaryData::namedResourceListSize;
+
+    for (int i = 0; i < n; ++i)
+    {
+        const juce::String original (RattlerBinaryData::originalFilenames[i]);
+        if (!original.endsWithIgnoreCase (".rattlerpreset")) continue;
+
+        const juce::File dest = folder.getChildFile (original);
+        if (dest.existsAsFile()) continue;
+
+        int dataSize = 0;
+        const void* data = RattlerBinaryData::getNamedResource (
+            RattlerBinaryData::namedResourceList[i], dataSize);
+        if (!data || dataSize <= 0) continue;
+
+        dest.replaceWithData (data, (size_t)dataSize);
+    }
 }

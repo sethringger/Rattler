@@ -3,6 +3,7 @@
 #include "PluginProcessor.h"
 #include "PresetManager.h"
 #include "IRManager.h"
+#include "SampleManager.h"
 #include "FilterXYPad.h"
 #include "TriggerXYPad.h"
 #include "TuneDecayPad.h"
@@ -149,7 +150,8 @@ private:
     RattlerAudioProcessor& audioProcessor;
 
     // --- IR Manager (shared catalog, per-layer selection tracked in LayerUI) ---
-    std::unique_ptr<IRManager> irManager;
+    std::unique_ptr<IRManager>     irManager;
+    std::unique_ptr<SampleManager> sampleManager;
 
     // --- Preset strip ---
     std::unique_ptr<PresetManager> presetManager;
@@ -246,6 +248,11 @@ private:
         juce::Label    sampleStartLabel,    sampleAttackLabel;
         juce::Label    sampleSustainLabel,  sampleDecayLabel;
         std::unique_ptr<SamplePreviewComponent> samplePreview;
+        // Sample browser strip (below the preview)
+        juce::TextButton   prevSampleBtn;
+        juce::TextButton   sampleNameBtn;
+        juce::TextButton   nextSampleBtn;
+        int                currentSampleIndex = -1;
         std::unique_ptr<FilterXYPad> sampleFilterXY;
 
         // SOURCE TAB — ModalRattle mode
@@ -370,7 +377,7 @@ private:
     KnobLookAndFeel       knobLnf;
     PillToggleLookAndFeel pillToggleLnf;
 
-    LayerUI layerUIs[2];
+    LayerUI layerUIs[RattlerAudioProcessor::kNumLayers];
 
     // Global attachments
     using SliderAtt = juce::AudioProcessorValueTreeState::SliderAttachment;
@@ -384,8 +391,8 @@ private:
     std::unique_ptr<ButtonAtt> convSkipAttach;
     using ComboAtt = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
 
-    VerticalButton layerBtns[2];
-    std::unique_ptr<juce::ParameterAttachment> layerEnableAttach[2];
+    VerticalButton layerBtns[RattlerAudioProcessor::kNumLayers];
+    std::unique_ptr<juce::ParameterAttachment> layerEnableAttach[RattlerAudioProcessor::kNumLayers];
 
     // --- Helpers ---
     void setupKnob  (juce::Slider&, const juce::String& label, juce::Label&);
@@ -401,12 +408,17 @@ private:
     void updateIRPreview     (int idx);
     void updateSamplePreview (int idx);
     void showPresetMenu();
+    void showSaveDialog();
     void showSaveAsDialog();
     void updatePresetDisplay();
-    void showIRMenu     (int layerIdx);
-    void browseForIR    (int layerIdx);
-    void loadIREntry    (int entryIdx, int layerIdx);
-    void updateIRBrowser(int layerIdx);
+    void showIRMenu         (int layerIdx);
+    void browseForIR        (int layerIdx);
+    void loadIREntry        (int entryIdx, int layerIdx);
+    void updateIRBrowser    (int layerIdx);
+    void showSampleMenu     (int layerIdx);
+    void browseForSample    (int layerIdx);
+    void loadSampleEntry    (int entryIdx, int layerIdx);
+    void updateSampleBrowser(int layerIdx);
 
     RattlerAudioProcessor::LayerMode getLayerMode (int idx) const;
 

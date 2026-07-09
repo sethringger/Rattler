@@ -33,4 +33,5 @@ private:
     juce::String            currentName  = "Untitled";
 
     void scan();
+    void extractFactoryPresetsIfNeeded();
 };

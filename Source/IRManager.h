@@ -41,4 +41,6 @@ public:
 private:
     RattlerAudioProcessor& processor;
     juce::Array<Entry>     entries;
+
+    void extractFactoryIRsIfNeeded();
 };

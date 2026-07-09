@@ -27,6 +27,15 @@ else()
     set(RATTLER_FORMATS VST3 Standalone)
 endif()
 
+# Factory content compiled into the binary
+file(GLOB FACTORY_IRS     "Assets/IRs/Factory/*.wav")
+file(GLOB FACTORY_PRESETS "Assets/Presets/Factory/*.rattlerpreset")
+
+juce_add_binary_data(RattlerBinaryData
+    NAMESPACE RattlerBinaryData
+    SOURCES ${FACTORY_IRS} ${FACTORY_PRESETS}
+)
+
 juce_add_plugin(Rattler
     COMPANY_NAME "RinggTheory"
     PLUGIN_MANUFACTURER_CODE Ring
@@ -48,12 +57,14 @@ target_sources(Rattler
         Source/PluginEditor.cpp
         Source/PresetManager.cpp
         Source/IRManager.cpp
+        Source/SampleManager.cpp
 )
 
 target_link_libraries(Rattler
     PRIVATE
         juce::juce_audio_utils
         juce::juce_dsp
+        RattlerBinaryData
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags

@@ -184,19 +184,27 @@ RattlerAudioProcessorEditor::RattlerAudioProcessorEditor (RattlerAudioProcessor&
         addAndMakeVisible (layerBtns[i]);
     }
 
-    // Restore IR browser state if a project was loaded before the editor opened
+    // ── IR Manager & Sample Manager (must be created before restore blocks) ──
+    irManager     = std::make_unique<IRManager>     (p);
+    sampleManager = std::make_unique<SampleManager> (p);
+
+    // Restore browser state if a project was loaded before the editor opened
     for (int i = 0; i < 2; ++i)
     {
-        const juce::String path = audioProcessor.getConvIRFilePath (i);
-        if (path.isNotEmpty())
+        if (audioProcessor.getConvIRFilePath (i).isNotEmpty())
         {
             layerUIs[i].currentIRIndex = irManager->findCurrentIndex (i);
             updateIRBrowser (i);
             updateIRPreview (i);
         }
+        if (audioProcessor.getSampleFilePath (i).isNotEmpty())
+        {
+            layerUIs[i].currentSampleIndex = sampleManager->findCurrentIndex (i);
+            updateSampleBrowser (i);
+            updateSamplePreview (i);
+        }
     }
 
-    // Keep preview in sync when IR is (re-)loaded asynchronously (e.g. project restore)
     audioProcessor.onConvIRLoaded = [this] (int idx)
     {
         juce::MessageManager::callAsync ([this, idx]
@@ -209,11 +217,13 @@ RattlerAudioProcessorEditor::RattlerAudioProcessorEditor (RattlerAudioProcessor&
 
     audioProcessor.onSampleLoaded = [this] (int idx)
     {
-        juce::MessageManager::callAsync ([this, idx] { updateSamplePreview (idx); });
+        juce::MessageManager::callAsync ([this, idx]
+        {
+            layerUIs[idx].currentSampleIndex = sampleManager->findCurrentIndex (idx);
+            updateSampleBrowser (idx);
+            updateSamplePreview (idx);
+        });
     };
-
-    // ── IR Manager ───────────────────────────────────────────────────────────
-    irManager = std::make_unique<IRManager> (p);
 
     // ── Preset strip ─────────────────────────────────────────────────────────
     presetManager = std::make_unique<PresetManager> (p);
@@ -234,13 +244,7 @@ RattlerAudioProcessorEditor::RattlerAudioProcessorEditor (RattlerAudioProcessor&
     setupPresetBtn (savePresetBtn, "Save");
     prevPresetBtn.onClick = [this] { presetManager->prevPreset(); };
     nextPresetBtn.onClick = [this] { presetManager->nextPreset(); };
-    savePresetBtn.onClick = [this]
-    {
-        if (presetManager->getCurrentIndex() < 0)
-            showSaveAsDialog();
-        else
-            presetManager->saveCurrentAs (presetManager->getCurrentName());
-    };
+    savePresetBtn.onClick = [this] { showSaveDialog(); };
 
     presetNameBtn.setButtonText (presetManager->getCurrentName());
     presetNameBtn.setColour (juce::TextButton::buttonColourId,   juce::Colour (0xff151515));
@@ -329,22 +333,7 @@ void RattlerAudioProcessorEditor::setupLayerUI (int idx,
     ui.samplePreview->onAttackMsChanged  = [this, idx] (float v) { layerUIs[idx].sampleAttackSlider .setValue (v, juce::sendNotification); };
     ui.samplePreview->onSustainMsChanged = [this, idx] (float v) { layerUIs[idx].sampleSustainSlider.setValue (v, juce::sendNotification); };
     ui.samplePreview->onDecayMsChanged   = [this, idx] (float v) { layerUIs[idx].sampleDecaySlider  .setValue (v, juce::sendNotification); };
-    ui.samplePreview->onClicked = [this, idx]
-    {
-        auto& ui2 = layerUIs[idx];
-        ui2.fileChooser = std::make_unique<juce::FileChooser> (
-            "Load rattle sample",
-            juce::File::getSpecialLocation (juce::File::userDesktopDirectory),
-            "*.wav;*.aiff;*.aif;*.flac;*.mp3");
-        ui2.fileChooser->launchAsync (
-            juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-            [this, idx] (const juce::FileChooser& fc)
-            {
-                auto f = fc.getResult();
-                if (f.existsAsFile())
-                    audioProcessor.loadSampleFile (idx, f);
-            });
-    };
+    ui.samplePreview->onClicked = [this, idx] { browseForSample (idx); };
 
     {
         const auto refreshPrev = [this, idx] (float) { updateSamplePreview (idx); };
@@ -360,6 +349,30 @@ void RattlerAudioProcessorEditor::setupLayerUI (int idx,
     addChildComponent (ui.samplePitchSlider); addChildComponent (ui.samplePitchLabel);
     addChildComponent (ui.sampleGainSlider);  addChildComponent (ui.sampleGainLabel);
     addChildComponent (*ui.samplePreview);
+
+    // Sample browser strip
+    auto setupSampleBtn = [&] (juce::TextButton& btn, const juce::String& text)
+    {
+        btn.setButtonText (text);
+        btn.setColour (juce::TextButton::buttonColourId,   juce::Colour (0xff1e1e1e));
+        btn.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff1e3050));
+        btn.setColour (juce::TextButton::textColourOffId,  kSubtext);
+        btn.setColour (juce::TextButton::textColourOnId,   kAccent);
+        addChildComponent (btn);
+    };
+    setupSampleBtn (ui.prevSampleBtn, "<");
+    setupSampleBtn (ui.nextSampleBtn, ">");
+    ui.sampleNameBtn.setButtonText ("No sample");
+    ui.sampleNameBtn.setColour (juce::TextButton::buttonColourId,   juce::Colour (0xff151515));
+    ui.sampleNameBtn.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff202020));
+    ui.sampleNameBtn.setColour (juce::TextButton::textColourOffId,  kSubtext);
+    ui.sampleNameBtn.setColour (juce::TextButton::textColourOnId,   kText);
+    addChildComponent (ui.sampleNameBtn);
+
+    ui.prevSampleBtn.onClick = [this, idx] { loadSampleEntry (layerUIs[idx].currentSampleIndex - 1, idx); };
+    ui.nextSampleBtn.onClick = [this, idx] { loadSampleEntry (layerUIs[idx].currentSampleIndex + 1, idx); };
+    ui.sampleNameBtn.onClick = [this, idx] { showSampleMenu (idx); };
+
     addChildComponent (*ui.sampleFilterXY);
 
     // ModalRattle mode
@@ -832,6 +845,9 @@ void RattlerAudioProcessorEditor::setLayerVisible (int idx, bool v)
     ui.samplePitchSlider   .setVisible (v); ui.samplePitchLabel   .setVisible (v);
     ui.sampleGainSlider    .setVisible (v); ui.sampleGainLabel    .setVisible (v);
     ui.samplePreview->setVisible (v);
+    ui.prevSampleBtn       .setVisible (v);
+    ui.sampleNameBtn       .setVisible (v);
+    ui.nextSampleBtn       .setVisible (v);
     ui.sampleFilterXY->setVisible (v);
 
     ui.rattleGapSlider   .setVisible (v); ui.rattleGapLabel   .setVisible (v);
@@ -900,6 +916,9 @@ void RattlerAudioProcessorEditor::setLayerEnabled (int idx, bool en)
     ui.samplePitchSlider     .setEnabled (en);
     ui.sampleGainSlider      .setEnabled (en);
     ui.samplePreview->setEnabled (en); ui.samplePreview->repaint();
+    ui.prevSampleBtn         .setEnabled (en);
+    ui.sampleNameBtn         .setEnabled (en);
+    ui.nextSampleBtn         .setEnabled (en);
     ui.bounceMassSlider      .setEnabled (en);
     ui.bounceGapSlider       .setEnabled (en);
     ui.bounceRestSlider      .setEnabled (en);
@@ -1044,7 +1063,7 @@ void RattlerAudioProcessorEditor::layoutLayer (int idx)
         }
         case Mode::Sample:
         {
-            // Left panel: Level | Sat | Pitch | Gain — full height, no load button
+            // Left panel: Level | Sat | Pitch | Gain
             const int slot4 = knobAreaW / 4;
             const int kw4   = slot4 - 2;
             layoutKnob (ui.levelSlider,       ui.levelLabel,       { knobX + slot4 * 0, bodyY, kw4, bodyH });
@@ -1053,12 +1072,23 @@ void RattlerAudioProcessorEditor::layoutLayer (int idx)
             layoutKnob (ui.sampleGainSlider,  ui.sampleGainLabel,  { knobX + slot4 * 3, bodyY, kw4, bodyH });
             ui.samplePitchSlider.setVisible (true); ui.samplePitchLabel.setVisible (true);
             ui.sampleGainSlider .setVisible (true); ui.sampleGainLabel .setVisible (true);
-            // Right panel: sample preview (clickable to load) top 60%, filter XY bottom 40%
-            const int prevH = padH * 6 / 10;
-            const int fxyH  = padH - prevH - 2;
-            ui.samplePreview->setBounds (xyX, padY, xyW, prevH);
+            // Right panel: preview (top ~57%) + browser strip + filter XY (bottom)
+            constexpr int browserH   = 22;
+            constexpr int arrowW     = 22;
+            constexpr int browserGap = 3;
+            const int previewH  = (padH * 6 / 10) - browserH - browserGap;
+            const int browserY  = padY + previewH + browserGap;
+            const int fxyY      = browserY + browserH + 2;
+            const int fxyH      = padH - previewH - browserH - browserGap - 2;
+            ui.samplePreview->setBounds (xyX, padY, xyW, previewH);
             ui.samplePreview->setVisible (true);
-            ui.sampleFilterXY->setBounds (xyX, padY + prevH + 2, xyW, fxyH);
+            ui.prevSampleBtn .setBounds (xyX,                   browserY, arrowW,           browserH);
+            ui.sampleNameBtn .setBounds (xyX + arrowW,          browserY, xyW - arrowW * 2, browserH);
+            ui.nextSampleBtn .setBounds (xyX + xyW - arrowW,    browserY, arrowW,           browserH);
+            ui.prevSampleBtn .setVisible (true);
+            ui.sampleNameBtn .setVisible (true);
+            ui.nextSampleBtn .setVisible (true);
+            ui.sampleFilterXY->setBounds (xyX, fxyY, xyW, fxyH);
             ui.sampleFilterXY->setVisible (true);
             break;
         }
@@ -1515,8 +1545,10 @@ void RattlerAudioProcessorEditor::filesDropped (const juce::StringArray& files, 
             }
             else
             {
-                audioProcessor.loadSampleFile (layerIdx, f);
-                // onSampleLoaded callback handles button text + preview update
+                const int newIdx = sampleManager->addUserSample (f, layerIdx);
+                layerUIs[layerIdx].currentSampleIndex = newIdx;
+                updateSampleBrowser (layerIdx);
+                // onSampleLoaded callback updates the preview
             }
             break;
         }
@@ -1641,6 +1673,37 @@ void RattlerAudioProcessorEditor::showPresetMenu()
         });
 }
 
+void RattlerAudioProcessorEditor::showSaveDialog()
+{
+    const int          cur     = presetManager->getCurrentIndex();
+    const juce::String curName = presetManager->getCurrentName();
+
+    auto* aw = new juce::AlertWindow ("Save Preset", "",
+                                      juce::MessageBoxIconType::NoIcon);
+    aw->addTextEditor ("name", curName, "New preset name:");
+
+    if (cur >= 0)
+        aw->addButton ("Overwrite",  1);
+    aw->addButton ("Save New", 2, juce::KeyPress (juce::KeyPress::returnKey));
+    aw->addButton ("Cancel",   0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    aw->enterModalState (true,
+        juce::ModalCallbackFunction::create ([this, aw, cur, curName] (int result)
+        {
+            if (result == 1)
+            {
+                presetManager->saveCurrentAs (curName);
+            }
+            else if (result == 2)
+            {
+                const juce::String name = aw->getTextEditorContents ("name").trim();
+                if (name.isNotEmpty())
+                    presetManager->saveCurrentAs (name);
+            }
+            delete aw;
+        }), false);
+}
+
 void RattlerAudioProcessorEditor::showSaveAsDialog()
 {
     auto* aw = new juce::AlertWindow ("Save Preset As",
@@ -1660,4 +1723,87 @@ void RattlerAudioProcessorEditor::showSaveAsDialog()
             }
             delete aw;
         }), false);
+}
+
+// =============================================================================
+// Sample browser helpers
+// =============================================================================
+void RattlerAudioProcessorEditor::updateSampleBrowser (int layerIdx)
+{
+    auto& ui = layerUIs[layerIdx];
+    const int   cur   = ui.currentSampleIndex;
+    const auto& files = sampleManager->getFiles();
+
+    juce::String name;
+    if (cur >= 0 && cur < files.size())
+        name = files[cur].getFileNameWithoutExtension();
+    else
+    {
+        const juce::String path = audioProcessor.getSampleFilePath (layerIdx);
+        name = path.isNotEmpty() ? juce::File (path).getFileNameWithoutExtension()
+                                 : "No sample";
+    }
+
+    ui.sampleNameBtn.setButtonText (name);
+    ui.prevSampleBtn.setEnabled (cur > 0);
+    ui.nextSampleBtn.setEnabled (cur >= 0 && cur < files.size() - 1);
+}
+
+void RattlerAudioProcessorEditor::loadSampleEntry (int entryIdx, int layerIdx)
+{
+    const int n = sampleManager->getNumEntries();
+    if (n == 0) return;
+    entryIdx = juce::jlimit (0, n - 1, entryIdx);
+    sampleManager->loadEntry (entryIdx, layerIdx);
+    layerUIs[layerIdx].currentSampleIndex = entryIdx;
+    updateSampleBrowser (layerIdx);
+}
+
+void RattlerAudioProcessorEditor::showSampleMenu (int layerIdx)
+{
+    juce::PopupMenu menu;
+    const auto& files = sampleManager->getFiles();
+    const int   cur   = layerUIs[layerIdx].currentSampleIndex;
+
+    for (int i = 0; i < files.size(); ++i)
+        menu.addItem (i + 1, files[i].getFileNameWithoutExtension(), true, i == cur);
+
+    if (files.isEmpty())
+        menu.addItem (1, "(no samples in library)", false, false);
+
+    menu.addSeparator();
+    menu.addItem (files.size() + 1, "Browse files...");
+
+    menu.showMenuAsync (
+        juce::PopupMenu::Options().withTargetComponent (layerUIs[layerIdx].sampleNameBtn),
+        [this, layerIdx, count = files.size()] (int result)
+        {
+            if (result == 0) return;
+            if (result <= count)
+                loadSampleEntry (result - 1, layerIdx);
+            else if (result == count + 1)
+                browseForSample (layerIdx);
+        });
+}
+
+void RattlerAudioProcessorEditor::browseForSample (int layerIdx)
+{
+    auto& ui = layerUIs[layerIdx];
+    ui.fileChooser = std::make_unique<juce::FileChooser> (
+        "Load rattle sample",
+        juce::File::getSpecialLocation (juce::File::userDesktopDirectory),
+        "*.wav;*.aiff;*.aif;*.flac;*.mp3");
+
+    ui.fileChooser->launchAsync (
+        juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+        [this, layerIdx] (const juce::FileChooser& fc)
+        {
+            const auto f = fc.getResult();
+            if (f.existsAsFile())
+            {
+                const int newIdx = sampleManager->addUserSample (f, layerIdx);
+                layerUIs[layerIdx].currentSampleIndex = newIdx;
+                updateSampleBrowser (layerIdx);
+            }
+        });
 }
